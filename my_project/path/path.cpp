@@ -39,106 +39,145 @@ namespace Path {
         bool hitObstacle;   // 是否撞到障碍物
     };
 
-    std::vector<Sector> findSectors(const Map::mapType& _map, const Point _endPoint, SubDivLevel searchLevel,double castDistance) {
+    std::vector<Sector> findSectors(const Map::mapType& _map, const Point _endPoint, SubDivLevel searchLevel, double fireRadius, double carRadius) {
         if (_map.empty() || _map[0].empty()) {
             return {};
         }
 
         const int height = static_cast<int>(_map.size());
         const int width = static_cast<int>(_map[0].size());
-        const double stepSize = getRayStepSizeForLevel(searchLevel);  // 根据搜索级别调整射线步进精度
-        const double maxRayDistance = castDistance * 2;  // 最大射线距离
+        const double stepSize = getRayStepSizeForLevel(searchLevel);
 
-        std::vector<ObstacleRay> obstacleRays;
+        // 射线检测半径为 fireRadius + 2*carRadius
+        const double rayLength = fireRadius + 2 * carRadius;
 
-        // 向360度各个方向投射射线（每1度一条）
+        // 计算目标点到地图边界的最小距离
+        double minDistToBorder = std::min({
+            static_cast<double>(_endPoint.x),
+            static_cast<double>(_endPoint.y),
+            static_cast<double>(width - _endPoint.x - 1),
+            static_cast<double>(height - _endPoint.y - 1)
+        });
+
+        // 如果目标点太靠近边界，适当缩短射线长度
+        double effectiveRayLength = std::min(rayLength, minDistToBorder);
+
+        std::vector blockedAngles(360, false);
+
+        // 向360度各个方向投射射线，检查是否被阻挡
+        int blockedCount = 0;
         for (int angleDeg = 0; angleDeg < 360; ++angleDeg) {
             const double angleRad = angleDeg * M_PI / 180.0;
             const double dx = std::cos(angleRad);
             const double dy = std::sin(angleRad);
 
-            bool hitObstacle = false;
-            double hitDistance = maxRayDistance;
+            bool isBlocked = false;
 
-            // 沿射线方向逐步检测
-            for (int step = 0; step < static_cast<int>(maxRayDistance / stepSize); ++step) {
+            // 沿射线方向逐步检测到指定距离
+            for (int step = 1; step <= static_cast<int>(effectiveRayLength / stepSize); ++step) {
                 const double rayDistance = step * stepSize;
                 const double rayX = _endPoint.x + dx * rayDistance;
                 const double rayY = _endPoint.y + dy * rayDistance;
-
-                // 检查地图边界
-                if (rayX < 0 || rayX >= width || rayY < 0 || rayY >= height) {
-                    hitDistance = rayDistance;
-                    hitObstacle = true;
-                    break;
-                }
 
                 // 检查是否撞到障碍物
                 const int gridX = static_cast<int>(rayX);
                 const int gridY = static_cast<int>(rayY);
 
-                if (gridX >= 0 && gridX < width && gridY >= 0 && gridY < height) {
+                if (gridX >= 0 && gridY >= 0 && gridX < width && gridY < height) {
                     if (_map[gridY][gridX]) {  // 撞到障碍物
-                        hitDistance = rayDistance;
-                        hitObstacle = true;
+                        isBlocked = true;
                         break;
                     }
                 }
             }
 
-            obstacleRays.push_back({angleDeg, hitDistance, hitObstacle});
+            blockedAngles[angleDeg] = isBlocked;
+            if (isBlocked) blockedCount++;
         }
 
-        // 分析障碍物射线，找出清晰扇区
-        std::vector<Sector> clearSectors;
-        const double minGapDegrees = 45.0;  // 最小间隙角度
-        // 找出在关心范围内的障碍物角度
-        std::vector<int> obstacleAngles;
-        for (const auto& ray : obstacleRays) {
-            if (ray.hitObstacle && ray.distance <= castDistance) {
-                obstacleAngles.push_back(ray.angle);
-            }
-        }
+        std::cout << "Ray casting: " << (360 - blockedCount) << "/360 directions clear\n";
 
-        if (obstacleAngles.empty()) {
-            // 没有近距离障碍物，整个圆周都是清晰的
-            clearSectors.push_back({0.0, 360.0});
-            return clearSectors;
-        }
+        // 找出连续的清晰角度区域，要求至少45度
+        std::vector<Sector> tempSectors;
+        const int minGapDegrees = 45;
 
-        // 排序障碍物角度
-        std::sort(obstacleAngles.begin(), obstacleAngles.end());
+        // 简化逻辑：直接扫描所有角度，找出连续的清晰区域
+        std::vector<std::pair<int, int>> gaps;
 
-        // 寻找相邻障碍物间的间隙
-        for (size_t i = 0; i < obstacleAngles.size(); ++i) {
-            const int currentAngle = obstacleAngles[i];
-            const int nextAngle = obstacleAngles[(i + 1) % obstacleAngles.size()];
-
-            double gap;
-            double sectorStart, sectorEnd;
-
-            if (nextAngle > currentAngle) {
-                // 正常情况
-                gap = nextAngle - currentAngle;
-                sectorStart = currentAngle;
-                sectorEnd = nextAngle;
+        int start = -1;
+        for (int angle = 0; angle < 360; ++angle) {
+            if (!blockedAngles[angle]) {
+                // 清晰角度
+                if (start == -1) {
+                    start = angle;
+                }
             } else {
-                // 处理跨越0度的情况（如从350度到10度）
-                gap = (360 - currentAngle) + nextAngle;
-                sectorStart = currentAngle;
-                sectorEnd = nextAngle;
-            }
-
-            // 如果间隙足够大，这就是一个清晰扇区
-            if (gap >= minGapDegrees) {
-                if (sectorEnd > 360) {
-                    // 处理跨越边界的情况
-                    clearSectors.push_back({sectorStart, 360.0});
-                    clearSectors.push_back({0.0, sectorEnd - 360.0});
-                } else {
-                    clearSectors.push_back({sectorStart, sectorEnd});
+                // 阻挡角度
+                if (start != -1) {
+                    gaps.push_back({start, angle});
+                    start = -1;
                 }
             }
+        }
+
+        // 处理最后一个可能的清晰区域（到360度）
+        if (start != -1) {
+            gaps.push_back({start, 360});
+        }
+
+        // 检查是否有跨越0度的情况（第一个和最后一个区域可能连接）
+        if (!gaps.empty() && !blockedAngles[0] && !blockedAngles[359]) {
+            // 合并第一个和最后一个区域
+            if (gaps.size() >= 2 && gaps[0].first == 0 && gaps.back().second == 360) {
+                int start = gaps.back().first;
+                int end = gaps[0].second;
+                int gapSize = (360 - start) + end;
+                if (gapSize >= minGapDegrees) {
+                    // 跨越0度的扇区，start > end
+                    tempSectors.push_back({static_cast<double>(start), static_cast<double>(end)});
+                }
+                // 移除已合并的区域
+                gaps.erase(gaps.begin());
+                gaps.pop_back();
+            }
+        }
+        // 添加剩余的正常区域
+        for (const auto& gap : gaps) {
+            int gapSize = gap.second - gap.first;
+            if (gapSize >= minGapDegrees) {
+                tempSectors.push_back({static_cast<double>(gap.first), static_cast<double>(gap.second)});
+            }
+        }
+        // 扇区归一化到[0,360)
+        for (auto& sector : tempSectors) {
+            if (sector.start >= 360.0) sector.start -= 360.0;
+            if (sector.end >= 360.0) sector.end -= 360.0;
+        }
+
+        std::vector<Sector> clearSectors;
+
+        for (auto sector : tempSectors) {
+            if (sector.start == 0 && sector.end == 0.0) {
+                // 特例：如果扇区是完整的360度，直接返回
+                clearSectors.push_back({0.0, 360.0});
+                continue;
+            }
+            if (sector.start < sector.end) {
+                // 正常扇区
+                clearSectors.push_back(sector);
+            }
+            else {
+                // 跨越0度的扇区
+                clearSectors.push_back({0, sector.start});
+                clearSectors.push_back({sector.end, 360});
+            }
+
+        }
+
+        std::cout << "Found " << clearSectors.size() << " sectors\n";
+
+        for (const auto& sector : clearSectors) {
+            std::cout << "Sector: [" << sector.start << ", " << sector.end << "]\n";
         }
 
         return clearSectors;
@@ -151,17 +190,16 @@ namespace Path {
         const int height = static_cast<int>(_map.size());
         const int width = static_cast<int>(_map[0].size());
 
-        // 检查边界约束
-        if (_start.x - _carRadius < 0 || _start.y - _carRadius < 0 ||
-            _start.x + _carRadius >= width || _start.y + _carRadius >= height) {
-            return false;
-        }
-
         // 检查禁入区域：车辆不能进入距离目标点小于fireRadius的区域
         const double distToEnd = std::sqrt((_start.x - _end.x) * (_start.x - _end.x) +
                                           (_start.y - _end.y) * (_start.y - _end.y));
         if (distToEnd < _fireRadius) {
             return false;
+        }
+
+        if (_start.x > width || _start.y > height ||
+            _start.x < 0 || _start.y < 0) {
+            return false; // 超出地图边界
         }
 
         // 检查车辆半径范围内的圆形区域是否有障碍物
@@ -170,7 +208,7 @@ namespace Path {
                 if (dx * dx + dy * dy <= _carRadius * _carRadius) {  // 圆形碰撞检测
                     const int checkX = _start.x + dx;
                     if (const int checkY = _start.y + dy; checkX >= 0 && checkX < width && checkY >= 0 && checkY < height) {
-                        if (_map[checkY][checkX]) {  // 撞到障碍物
+                        if (_map[checkY][checkX] == true) {  // 撞到障碍物
                             return false;
                         }
                     }
@@ -212,44 +250,35 @@ namespace Path {
     std::vector<Point> getTargetPositions(const Map::mapType& _map, const Point _end,
                                          const int _carRadius, const int _fireRadius, SubDivLevel searchLevel) {
         std::vector<Point> targets;
-        const int minDist = _fireRadius;
-        const int maxDist = 2 * _fireRadius;
 
-        // 分析障碍物并找出清晰扇区
-        auto clearSectors = findSectors(_map, _end, searchLevel,2.0*_fireRadius);
+        // 目标点应该在 fireRadius + carRadius 的圆上
+        const double targetDistance = _fireRadius + _carRadius;
 
-        std::cout << "DEBUG: Found " << clearSectors.size() << " clear sectors\n";
-
-        for (const auto& sector : clearSectors) {
-            std::cout << "DEBUG: Sector from " << sector.start << "° to " << sector.end << "°\n";
-        }
+        auto clearSectors = findSectors(_map, _end, searchLevel, _fireRadius, _carRadius);
 
         if (clearSectors.empty()) {
-            std::cout << "DEBUG: No clear sectors found\n";
+            std::cout << "❌ No available sectors: target surrounded by obstacles\n";
             return {};
         }
 
-        // 在目标点周围搜索有效位置
-        const int searchRange = maxDist + _carRadius;
+        // 在清晰扇区内，沿着 targetDistance 圆周寻找目标点
+            for (const auto&[start, end] : clearSectors) {
+            // 在每个扇区内每隔2度寻找一个目标点
+            for (double angle = start; angle < end; angle += 1.0) {
+                const double angleRad = angle * M_PI / 180.0;
 
-        for (int dy = -searchRange; dy <= searchRange; ++dy) {
-            for (int dx = -searchRange; dx <= searchRange; ++dx) {
-                Point targetPos = {_end.x + dx, _end.y + dy};
+                const int targetX = static_cast<int>(_end.x + std::cos(angleRad) * targetDistance);
+                const int targetY = static_cast<int>(_end.y + std::sin(angleRad) * targetDistance);
+
+                Point targetPos = {targetX, targetY};
 
                 // 检查是否在地图边界内
                 if (targetPos.x >= 0 && targetPos.x < static_cast<int>(_map[0].size()) &&
                     targetPos.y >= 0 && targetPos.y < static_cast<int>(_map.size())) {
 
-                    const double dist = std::sqrt(dx * dx + dy * dy);
-
-                    // 检查距离约束：必须在环形区域内且在禁入区外
-                    if (dist >= minDist && dist <= maxDist && dist > _fireRadius &&
-                        isValidPosition(_map, targetPos, _end, _carRadius, _fireRadius)) {
-
-                        // 检查是否在清晰扇区内
-                        if (isPositionInClearSector(targetPos, _end, clearSectors)) {
-                            targets.push_back(targetPos);
-                        }
+                    // 验证这个位置是有效的（不在火焰半径内，且车辆可以放置）
+                    if (isValidPosition(_map, targetPos, _end, _carRadius, _fireRadius)) {
+                        targets.push_back(targetPos);
                     }
                 }
             }
@@ -278,17 +307,13 @@ namespace Path {
             {-intStepSize, intStepSize}, {-intStepSize, -intStepSize}   // 对角线
         };
 
-        auto clearSectors = findSectors(_map, end, searchLevel,fireRadius);
-
         for (const auto& dir : directions) {
             Point newPos = {pos.x + dir.first, pos.y + dir.second};
 
+            // 只检查位置是否有效，不强制要求在清晰扇区内
+            // 清晰扇区的限制应该只用于目标点选择，而不是路径搜索
             if (isValidPosition(_map, newPos, end, carRadius, fireRadius)) {
-                // 额外检查：位置必须在清晰扇区内或者是起始位置
-                if (newPos.x == start.x && newPos.y == start.y ||
-                    isPositionInClearSector(newPos, end, clearSectors)) {
-                    neighbors.push_back(newPos);
-                }
+                neighbors.push_back(newPos);
             }
         }
 
@@ -326,12 +351,6 @@ namespace Path {
         openSet.push({0.0, start});
         gScore[startKey] = 0.0;
 
-        auto clearSectors = findSectors(_map, end, searchLevel,fireRadius);
-        const int minDist = fireRadius;
-        const int maxDist = 2 * fireRadius;
-
-        std::cout << "DEBUG: A* starting with " << clearSectors.size() << " clear sectors (level " << searchLevel << ")\n";
-
         int stepsCount = 0;
         while (!openSet.empty()) {
             stepsCount++;
@@ -345,35 +364,8 @@ namespace Path {
             }
             closedSet.insert(currentKey);
 
-            // 积极早期终止：如果当前位置在清晰扇区内且满足距离约束
-            if (!(current.x == start.x && current.y == start.y)) {
-                const double distToEnd = std::sqrt((current.x - end.x) * (current.x - end.x) +
-                                                  (current.y - end.y) * (current.y - end.y));
-
-                if (distToEnd >= minDist && distToEnd <= maxDist && distToEnd > fireRadius &&
-                    isPositionInClearSector(current, end, clearSectors)) {
-
-                    std::cout << "DEBUG: Early termination at (" << current.x << ", " << current.y
-                             << ") after " << stepsCount << " steps\n";
-
-                    // 重构路径
-                    std::vector<Point> path;
-                    Point tempCurrent = current;
-                    long long tempKey = currentKey;
-                    while (cameFrom.count(tempKey)) {
-                        path.push_back(tempCurrent);
-                        tempCurrent = cameFrom[tempKey];
-                        tempKey = pointToKey(tempCurrent);
-                    }
-                    path.push_back(start);
-                    std::reverse(path.begin(), path.end());
-                    return path;
-                }
-            }
-
-            // 正常终止：到达原始目标
+            // 正常终止：到达目标
             if (currentKey == targetKey) {
-                std::cout << "DEBUG: Reached original target\n";
                 std::vector<Point> path;
                 Point tempCurrent = current;
                 long long tempKey = currentKey;
@@ -471,9 +463,6 @@ namespace Path {
             i = maxReachable;
         }
 
-        std::cout << "DEBUG: Simplified path from " << path.size() << " to "
-                 << simplifiedPath.size() << " points\n";
-
         // 将简化后的路径转换为Movement对象
         std::vector<Movement> movements;
 
@@ -497,9 +486,6 @@ namespace Path {
             }
 
             movements.push_back({angle, distance});
-
-            std::cout << "DEBUG: Movement " << (i + 1) << ": angle=" << angle
-                     << "°, distance=" << distance << "\n";
         }
 
         return movements;
@@ -513,19 +499,15 @@ namespace Path {
         }
 
         if (!isValidPosition(_map, start, end, carRadius, fireRadius)) {
-            std::cout << "DEBUG: Invalid start position!\n";
+            std::cout << "❌ Pathfinding failed: Invalid start position (too close to target or obstacles)\n";
             return {};
         }
 
-        std::cout << "DEBUG: Starting search with level " << searchLevel << " (stepSize: " << getStepSizeForLevel(searchLevel) << ")\n";
-
         // 获取有效的目标位置
-        std::cout << "DEBUG: Getting target positions...\n";
         auto targetPositions = getTargetPositions(_map, end, carRadius, fireRadius, searchLevel);
-        std::cout << "DEBUG: Found " << targetPositions.size() << " valid target positions\n";
 
         if (targetPositions.empty()) {
-            std::cout << "DEBUG: No valid target positions found!\n";
+            std::cout << "❌ Pathfinding failed: No reachable positions around target (surrounded by obstacles or map boundaries)\n";
             return {};
         }
 
@@ -535,21 +517,66 @@ namespace Path {
                 return heuristic(start, a) < heuristic(start, b);
             });
 
-        std::cout << "DEBUG: Selected best target: (" << bestTarget.x << ", " << bestTarget.y << ")\n";
+        std::cout << "✓ Found " << targetPositions.size() << " target positions, selected best: ("
+                  << bestTarget.x << ", " << bestTarget.y << ")\n";
 
         // 使用A*算法找到路径
-        std::cout << "DEBUG: Starting A* pathfinding...\n";
         auto path = aStarSearch(start, bestTarget, _map, end, carRadius, fireRadius, searchLevel);
         if (path.empty()) {
-            std::cout << "DEBUG: A* failed to find path!\n";
+            // 分析失败原因
+            std::cout << "❌ Pathfinding failed: A* algorithm cannot find path\n";
+
+            // 检查起点到目标点之间是否有大面积障碍物阻挡
+            double directDistance = heuristic(start, bestTarget);
+            int obstacleCount = 0;
+            int totalChecked = 0;
+
+            // 沿直线路径检查障碍物密度
+            int steps = static_cast<int>(directDistance);
+            for (int i = 0; i <= steps; ++i) {
+                double t = static_cast<double>(i) / std::max(steps, 1);
+                int checkX = static_cast<int>(start.x + t * (bestTarget.x - start.x));
+                int checkY = static_cast<int>(start.y + t * (bestTarget.y - start.y));
+
+                if (checkX >= 0 && checkX < static_cast<int>(_map[0].size()) &&
+                    checkY >= 0 && checkY < static_cast<int>(_map.size())) {
+                    totalChecked++;
+                    if (_map[checkY][checkX]) {
+                        obstacleCount++;
+                    }
+                }
+            }
+
+            if (totalChecked > 0) {
+                double obstacleRatio = static_cast<double>(obstacleCount) / totalChecked;
+                if (obstacleRatio > 0.3) {
+                    std::cout << "   Reason: High obstacle density on direct path ("
+                              << static_cast<int>(obstacleRatio * 100) << "%)\n";
+                } else {
+                    std::cout << "   Reason: Complex terrain or large obstacles requiring detour\n";
+                }
+            }
             return {};
         }
 
-        std::cout << "DEBUG: A* found path with " << path.size() << " points\n";
-
         // 将路径转换为Movement对象
         auto movements = pathToMovements(path, _map, end, carRadius, fireRadius);
-        std::cout << "DEBUG: Generated " << movements.size() << " movement commands\n";
+        std::cout << "✓ Pathfinding successful: " << movements.size() << " movement commands\n";
+
+
+        auto auxAngle = std::atan2(bestTarget.y - end.y, bestTarget.x - end.x);
+
+        auxAngle = auxAngle * 180.0 / M_PI; // 转换为度
+
+        auxAngle += 90.0; // 调整误差角度
+
+        if (auxAngle < 0.0) {
+            auxAngle += 360.0;
+        }
+
+        movements.emplace_back(
+            Movement{auxAngle, 0.0}
+        );
 
         return movements;
     }

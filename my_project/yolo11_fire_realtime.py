@@ -54,7 +54,7 @@ def find_first_usb_camera():
             return dev
     return None
 
-def main():
+def main_fire():
     if len(sys.argv) > 1:
         video_device = sys.argv[1]
     else:
@@ -95,7 +95,7 @@ def main():
     parser.add_argument('--reg', type=int, default=16, help='DFL reg layer.')
     opt = parser.parse_args()
     logger.info(opt)
-
+    print("opt:",opt)
     # 实例化
     model = YOLO11_Detect(opt)
     
@@ -131,6 +131,8 @@ def main():
         for class_id, score, x1, y1, x2, y2 in results:
             print("(%d, %d, %d, %d) -> %s: %.2f"%(x1,y1,x2,y2, coco_names[class_id], score))
             draw_detection(resized_data, (x1, y1, x2, y2), score, class_id)
+            print("class_id:",class_id)
+            print("type:",type(class_id))
 
         t1 = time()
 
@@ -410,4 +412,4 @@ def draw_detection(img, bbox, score, class_id) -> None:
     cv2.putText(img, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
 if __name__ == "__main__":
-    main()
+    main_fire()

@@ -370,7 +370,7 @@ def main():
                                 RDK S100: Nash-e.
                                 RDK S100P: Nash-m.""") 
     # parser.add_argument('--test-img', type=str, default='../../../../resource/datasets/COCO2017/assets/bus.jpg', help='Path to Load Test Image.')
-    parser.add_argument('--test-img', type=str, default='/app/my_project/photo/fire_screenshot_19.07.2025.png', help='Path to Load Test Image.')
+    parser.add_argument('--test-img', type=str, default='/app/my_project/photo/fire_screenshot_23.07.2025.png', help='Path to Load Test Image.')
     parser.add_argument('--mask-save-path', type=str, default='/app/my_project/v8seg-photo/mask.jpg', help='Path to Save Mask Image.')
     # parser.add_argument('--mask2-save-path', type=str, default='/app/my_project/v8seg-photo/mask2.jpg', help='Path to Save Mask Image.')
     parser.add_argument('--img-save-path', type=str, default='/app/my_project/v8seg-photo/result.jpg', help='Path to Load Test Image.')
@@ -485,9 +485,9 @@ def main():
     else:
         start_x= car_center[0]-0.05*abs(car_center[0]-384)
     if car_center[1]<288:
-        start_x= car_center[1]+0.05*abs(car_center[1]-384)
+        start_y= car_center[1]+0.05*abs(car_center[1]-288)
     else:
-        start_x= car_center[1]-0.05*abs(car_center[1]-384)
+        start_y= car_center[1]-0.05*abs(car_center[1]-288)
     # start_x, start_y = car_center[0]+0.05*abs(car_center[0]-384), car_center[1]-0.05*(car_center[1]-288)
     # start_x, start_y = 120,120
     #透视变换
@@ -509,8 +509,8 @@ def main():
     map_array = np.array(map2, dtype=np.uint8)
 
     # 坐标数据
-    coords = np.array([int(start_x/zoomm),int(start_y/zoomm), int(fire_center[0]/zoomm), int(fire_center[1]/zoomm),12,9], dtype=np.int32)
-    print('coords:',coords)
+    # coords = np.array([int(start_x/zoomm),int(start_y/zoomm), int(fire_center[0]/zoomm), int(fire_center[1]/zoomm),12,9], dtype=np.int32)
+    # print('coords:',coords)
 
     data ={
         "width": 133,
@@ -654,7 +654,7 @@ def main():
     #     start_x, start_y = end_x, end_y
     packet3 = bytes([0x54, 2, 0x00, 0x64, 0x45])
     all_data.append(packet3)
-    ser.write(b''.join(all_data))
+    # ser.write(b''.join(all_data))
 
     print(all_data)
     #画终点

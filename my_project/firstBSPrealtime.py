@@ -238,6 +238,8 @@ class BPU_Detect:
             
             self.draw_detection(draw_img, (x1, y1, x2, y2), score, class_id, self.labelname)
         
+        print(type(self.ids))
+        print(self.ids)
         cv2.imshow("fire",draw_img)
         # if self.is_save:
         #     cv2.imwrite("result.jpg", draw_img)
@@ -285,7 +287,7 @@ def main_fire():
         # test_img = "/app/my_project/photo/0ce61215-6d34-49f9-aa6d-5f0feed430f8.jpg"
         models = "/app/my_project/bin/converted_model2.bin"
         # infer = BPU_Detect(models,coconame,conf=0.1,iou=0.3)
-        infer = BPU_Detect(models,coconame,conf=0.99,iou=0.3,mode = True)
+        infer = BPU_Detect(models,coconame,conf=0.55,iou=0.3,mode = True)
         # infer.detect(test_img,method_pre=1,method_post=1)
 
         while True:

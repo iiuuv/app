@@ -85,14 +85,12 @@ int main() {
         }
     }
 
-    std::cout << "=== 路径搜索测试 ===" << std::endl;
-    std::cout << "起始位置: (" << start.x << ", " << start.y << ")" << std::endl;
-    std::cout << "目标位置: (" << end.x << ", " << end.y << ")" << std::endl;
-    std::cout << "车辆半径: " << carRadius << std::endl;
-    std::cout << "射击半径: " << fireRadius << std::endl;
-    std::cout << std::endl;
+    std::cout << "=== Path Finding ===" << std::endl;
+    std::cout << "Start: (" << start.x << ", " << start.y << ") -> Target: (" << end.x << ", " << end.y << ")" << std::endl;
+    std::cout << "Car Radius: " << carRadius << ", Fire Radius: " << fireRadius << std::endl;
 
-    auto movements = Path::SearchPathExport(map, start, end, carRadius, fireRadius, Path::SubDivLevel::maxSize);
+
+    auto movements = Path::SearchPathExport(map, start, end, carRadius, fireRadius, Path::SubDivLevel::minSize);
 
     // 执行路径搜索
     json result;
@@ -108,7 +106,7 @@ int main() {
         }
     }
 
-    std::snprintf(pyReturn, 1024, "%s", result.dump().c_str());
+    std::snprintf(pyReturn, 2048, "%s", result.dump().c_str());
 
     std::cout << std::endl;
     return 0;

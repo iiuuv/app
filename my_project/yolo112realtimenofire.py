@@ -30,14 +30,14 @@ import logging
 import ctypes
 import os
 from firstBSPrealtime import BPU_Detect
-import socket
+# import socket
 
-HOST = '192.168.1.254'  # 主机的IP地址
-PORT = 8080            # 主机的端口号
+# HOST = '192.168.1.254'  # 主机的IP地址
+# PORT = 8080            # 主机的端口号
 
-# 创建Socket连接
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-client_socket.connect((HOST, PORT))
+# # 创建Socket连接
+# client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+# client_socket.connect((HOST, PORT))
 
 
 # 日志模块配置
@@ -116,7 +116,7 @@ def main_map():
     # parser.add_argument('--img-save-path', type=str, default='/app/my_project/v8seg-photo/result.jpg', help='Path to Load Test Image.')
     parser.add_argument('--classes-num', type=int, default=5, help='Classes Num to Detect.')
     parser.add_argument('--nms-thres', type=float, default=0.7, help='IoU threshold.')
-    parser.add_argument('--score-thres', type=float, default=0.8, help='confidence threshold.')
+    parser.add_argument('--score-thres', type=float, default=0.80, help='confidence threshold.')
     parser.add_argument('--reg', type=int, default=16, help='DFL reg layer.')
     parser.add_argument('--mc', type=int, default=32, help='Mask Coefficients')
     parser.add_argument('--is-open', type=bool, default=True, help='Ture: morphologyEx')
@@ -205,18 +205,18 @@ def main_map():
                 cv2.polylines(draw_img, points, isClosed=True, color=rdk_colors[(class_id-1)%20], thickness=4)
 
         add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
-        # cv2.imshow("Mask",zeros)
-        # cv2.imshow("add_result",add_result)
+        cv2.imshow("Mask",zeros)
+        cv2.imshow("add_result",add_result)
 
         #发送给主机图像
-        message = "1"
-        client_socket.sendall(message.encode('utf-8'))
-        # 将图像数组转为字节流
-        sleep(0.01)
-        data1 = add_result.tobytes()
+        # message = "1"
+        # client_socket.sendall(message.encode('utf-8'))
+        # # 将图像数组转为字节流
+        # sleep(0.01)
+        # data1 = add_result.tobytes()
 
-        # 发送数据长度和图像数据
-        client_socket.sendall(struct.pack("L", len(data1)) + data1)
+        # # 发送数据长度和图像数据
+        # client_socket.sendall(struct.pack("L", len(data1)) + data1)
         
         key = cv2.waitKey(1) & 0xFF
         if key == 27 or key == ord('q'):  # ESC键或q键

@@ -1,3 +1,5 @@
+
+
 #!/user/bin/env python
 
 # Copyright (c) 2024，WuChao D-Robotics.
@@ -37,10 +39,11 @@ import subprocess
 import ctypes
 import struct
 import json
+
 # import socket
-from pyftpdlib.authorizers import DummyAuthorizer
-from pyftpdlib.handlers import FTPHandler
-from pyftpdlib.servers import FTPServer
+# from pyftpdlib.authorizers import DummyAuthorizer
+# from pyftpdlib.handlers import FTPHandler
+# from pyftpdlib.servers import FTPServer
 from cv import ftp_server
 import threading
 # import time
@@ -57,8 +60,10 @@ EFD_NONBLOCK = 0o4000
 EFD_CLOEXEC = 0o2000000
 
 from firstBSPrealtime import BPU_Detect
-from serial1 import sending_data
-from pathfinder import search_path
+from serial1 import wait_for_complete,turn_back_and_land, take_off_and_go
+# from pathfinder import search_path
+from yolo11_fire_realtime import YOLO11_Detect
+from argparse import Namespace
 
 
 # 日志模块配置
@@ -72,33 +77,36 @@ logger = logging.getLogger("RDK_YOLO")
 
 print(sys.executable)
 
-def ftp_server():
-    # 创建用户授权管理器
-    authorizer = DummyAuthorizer()
-    
-    # 添加用户权限（将图片目录添加为访问路径）
-    # authorizer.add_user("user", "12345", "/home/user", perm="elradfmw")  # 原目录
-    authorizer.add_user("user", "12345", "/app/my_project/photo", perm="elradfmw")  # 新增图片目录
-    
-    # 可选：添加匿名用户访问（允许无账号访问）
-    # authorizer.add_anonymous("/home/nobody")
-    authorizer.add_anonymous("/app/my_project/photo")  # 允许匿名用户访问图片目录
 
-    # 初始化FTP处理程序
-    handler = FTPHandler
-    handler.authorizer = authorizer
 
-    # 设置服务器
-    server = FTPServer(("192.168.1.38", 8080), handler)
+# def ftp_server():
+#     # 创建用户授权管理器
+#     authorizer = DummyAuthorizer()
     
-    # 启动服务器
-    try:
-        print("FTP服务器已启动，等待连接...")
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n服务器已关闭")
-    except Exception as e:
-        print(f"发生错误: {e}")
+#     # 添加用户权限（将图片目录添加为访问路径）
+#     # authorizer.add_user("user", "12345", "/home/user", perm="elradfmw")  # 原目录
+#     authorizer.add_user("user", "12345", "/app/my_project/photo", perm="elradfmw")  # 新增图片目录
+    
+#     # 可选：添加匿名用户访问（允许无账号访问）
+#     # authorizer.add_anonymous("/home/nobody")
+#     authorizer.add_anonymous("/app/my_project/photo")  # 允许匿名用户访问图片目录
+
+#     # 初始化FTP处理程序
+#     handler = FTPHandler
+#     handler.authorizer = authorizer
+
+#     # 设置服务器
+#     server = FTPServer(("192.168.1.38", 8080), handler)
+    
+#     # 启动服务器
+#     try:
+#         print("FTP服务器已启动，等待连接...")
+#         server.serve_forever()
+#     except KeyboardInterrupt:
+#         print("\n服务器已关闭")
+#     except Exception as e:
+#         print(f"发生错误: {e}")
+
 
 
 def signal_handler(signal, frame):
@@ -336,6 +344,107 @@ def angle_packet(angle_now,angle_target) :
     angle_return = abs(int(angle_return))
     return bytes([0x54,direction,int((angle_return/255)%255),angle_return%255,0x45])
 
+if len(sys.argv) > 1:
+    video_device = sys.argv[1]
+else:
+    video_device = find_first_usb_camera()
+
+if video_device is None:
+    print("No USB camera found.")
+    sys.exit(-1)
+
+print(f"Opening video device: {video_device}")
+cap = cv2.VideoCapture(video_device)
+if(not cap.isOpened()):
+    exit(-1)
+
+print("Open usb camera successfully")
+# 设置usb camera的输出图像格式为 MJPEG， 分辨率 640 x 480
+# 可以通过 v4l2-ctl -d /dev/video8 --list-formats-ext 命令查看摄像头支持的分辨率
+# 根据应用需求调整该采集图像的分辨率
+codec = cv2.VideoWriter_fourcc( 'M', 'J', 'P', 'G' )
+cap.set(cv2.CAP_PROP_FOURCC, codec)
+cap.set(cv2.CAP_PROP_FPS, 30)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 768)
+
+# coconame1 = ["fire","smoke"]
+# models1 = "/app/my_project/bin/converted_model2.bin"
+# infer = BPU_Detect(models1,coconame1,conf=0.45,iou=0.3,mode = True)
+namespace_fire = Namespace(
+    model_path='/app/my_project/bin/yolo11_fire.bin',
+    classes_num=2,
+    nms_thres=0.7,
+    score_thres=0.6,
+    reg=16
+)
+fire_detect = YOLO11_Detect(namespace_fire)
+
+ser = serial.Serial('/dev/ttyS1', 115200, timeout=1) # 1s timeout
+ser3 = serial.Serial('/dev/ttyS3', 115200, timeout=1)
+all_data=[]
+
+
+def get_fire():
+    # 读取摄像头图像
+    class_id1=1
+
+    _ ,frame = cap.read()
+        
+    # print(frame.shape)
+    if frame is None:
+        print("Failed to get image from usb camera")
+
+    des_dim = (800, 600)
+
+    # 读图
+    img = cv2.resize(frame, des_dim, interpolation=cv2.INTER_AREA)
+
+    # infer.detect(img)
+
+    # 输入图片
+    input_tensor_fire = fire_detect.preprocess_yuv420sp(img)
+    # 推理
+    outputs_fire = fire_detect.c2numpy(fire_detect.forward(input_tensor_fire))
+    # 后处理
+    results_fire = fire_detect.postProcess(outputs_fire)
+    # fire_detect.detect(img)
+
+    for class_id, score, x1, y1, x2, y2 in results_fire:
+        class_id1=class_id
+        print("(%d, %d, %d, %d) -> %d: %.2f"%(x1,y1,x2,y2, class_id,score))
+    
+    return class_id1
+
+def wait_10_check():
+    time_start = time()
+    while True:
+        if (get_fire() == 0):
+            time_start = time()
+        if time() - time_start > 10:
+            break
+        sleep(0.05)
+
+def wait_for_signal(ser:serial.Serial):
+	buf = "a"
+	while True:
+		buf = ser.readall()
+		if len(buf) == 1 and buf[0] == 73:
+			break
+
+def wait_for_fire(ser:serial.Serial):
+	buf = "a"
+	while True:
+		buf = ser.readall()
+		if len(buf) == 1 and buf[0] == 87:
+			break		        
+
+def fly_control(ser1:serial.Serial,ser2:serial.Serial,all_data):
+    take_off_and_go(ser1)
+    wait_10_check()
+    #turn_back_and_land(ser2)
+    print("Landing")
+
 def main_map():
     # 初始化共享内存
     SHM_MAP = "/dev/shm/shm_map"
@@ -352,6 +461,9 @@ def main_map():
     shm_data, fd_data = create_shm(SHM_DATA, SHM_DATA_SIZE)
     shm_result, fd_result = create_shm(SHM_RESULT, SHM_RESULT_SIZE)
 
+    # output_folder = "/app/my_project/photo"
+    # os.makedirs(output_folder, exist_ok=True)
+
     # 启动 C++ 子任务
     efd = eventfd(0,0)
     print(f"启动 C++ 子进程，eventfd = {efd}")
@@ -363,6 +475,8 @@ def main_map():
     json_parsed2 = False
     data_list = []
     car_center_pianyi=0
+    path_points = []
+    idss=[]
 
     print(1)
     parser = argparse.ArgumentParser()
@@ -391,48 +505,51 @@ def main_map():
     # 实例化
     model = YOLO11_Seg(opt)
 
-    coconame1 = ["fire","smoke"]
-    models1 = "/app/my_project/bin/converted_model2.bin"
-    infer = BPU_Detect(models1,coconame1,conf=0.55,iou=0.3,mode = True)
+    # coconame1 = ["fire","smoke"]
+    # models1 = "/app/my_project/bin/converted_model2.bin"
+    # infer = BPU_Detect(models1,coconame1,conf=0.55,iou=0.3,mode = True)
 
-    if len(sys.argv) > 1:
-        video_device = sys.argv[1]
-    else:
-        video_device = find_first_usb_camera()
+    # if len(sys.argv) > 1:
+    #     video_device = sys.argv[1]
+    # else:
+    #     video_device = find_first_usb_camera()
 
-    if video_device is None:
-        print("No USB camera found.")
-        sys.exit(-1)
+    # if video_device is None:
+    #     print("No USB camera found.")
+    #     sys.exit(-1)
 
-    print(f"Opening video device: {video_device}")
-    cap = cv2.VideoCapture(video_device)
-    if(not cap.isOpened()):
-        exit(-1)
+    # print(f"Opening video device: {video_device}")
+    # cap = cv2.VideoCapture(video_device)
+    # if(not cap.isOpened()):
+    #     exit(-1)
     
-    print("Open usb camera successfully")
-    # 设置usb camera的输出图像格式为 MJPEG， 分辨率 640 x 480
-    # 可以通过 v4l2-ctl -d /dev/video8 --list-formats-ext 命令查看摄像头支持的分辨率
-    # 根据应用需求调整该采集图像的分辨率
-    codec = cv2.VideoWriter_fourcc( 'M', 'J', 'P', 'G' )
-    cap.set(cv2.CAP_PROP_FOURCC, codec)
-    cap.set(cv2.CAP_PROP_FPS, 30)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 768)
+    # print("Open usb camera successfully")
+    # # 设置usb camera的输出图像格式为 MJPEG， 分辨率 640 x 480
+    # # 可以通过 v4l2-ctl -d /dev/video8 --list-formats-ext 命令查看摄像头支持的分辨率
+    # # 根据应用需求调整该采集图像的分辨率
+    # codec = cv2.VideoWriter_fourcc( 'M', 'J', 'P', 'G' )
+    # cap.set(cv2.CAP_PROP_FOURCC, codec)
+    # cap.set(cv2.CAP_PROP_FPS, 30)
+    # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024)
+    # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 768)
 
-    ser = serial.Serial('/dev/ttyS1', 115200, timeout=1) # 1s timeout
+    
     t2=0
     car_center=(0,0)
     car_radius=0
     angle_deg=0
     fire_center=(0,0)
 
+    
+    wait_for_signal(ser3)
+    take_off_and_go(ser3)
+    
     while True:
         # ser.write('R'.encode('UTF-8'))
         # if ser.readall():
         #     ser.write('R'.encode('UTF-8'))
         #     print("Success to connect to the serial device.")
             # aaaaaa=ser.readall()
-            
 
         # 读取摄像头图像
         _ ,frame = cap.read()
@@ -447,9 +564,23 @@ def main_map():
         # 读图
         img = cv2.resize(frame, des_dim, interpolation=cv2.INTER_AREA)
 
-        infer.detect(img)
-        for class_id, score, bbox in zip(infer.ids, infer.scores, infer.bboxes):
-            x11, y11, x22, y22 = bbox
+        # infer.detect(img)
+        
+        # 输入图片
+        input_tensor_fire = fire_detect.preprocess_yuv420sp(img)
+        # 推理
+        outputs_fire = fire_detect.c2numpy(fire_detect.forward(input_tensor_fire))
+        # 后处理
+        results_fire = fire_detect.postProcess(outputs_fire)
+        
+        # for class_id, score, bbox in zip(infer.ids, infer.scores, infer.bboxes):
+        #     x11, y11, x22, y22 = bbox
+        idss=1
+        for class_id, score, x1, y1, x2, y2 in results_fire:
+            print("(%d, %d, %d, %d) -> %s: %.2f"%(x1,y1,x2,y2, ["fire","smoke"], score))
+            # draw_detection_fire(img, (x1, y1, x2, y2), score, class_id)
+            idss=class_id
+            print(idss)
 
         # 读图
         # 准备输入数据
@@ -524,32 +655,35 @@ def main_map():
                 class_counters[class_id] += 1
             else:
                 class_counters[class_id] = 1
-            if class_counters.get(1, 0) == 6 and class_counters.get(2, 0) == 4 and len(infer.ids) > 0:
-                Buildmap = 1
+            if class_counters.get(1, 0) == 6 and class_counters.get(2, 0) == 4 and idss == 0:
+                sleep(0.5)
+                if class_counters.get(1, 0) == 6 and class_counters.get(2, 0) == 4 and idss == 0:
+                    Buildmap = 1
             else:
                 Buildmap = 0
 
         #把火焰方框添加到掩码图中
-        fire_center=(0,0)
+        # fire_center=(0,0)
         fire_radius=0        
-        if len(infer.ids) != 0: 
+        if idss == 0: 
             # 获取rdk_colors的最后一个颜色
             last_color = rdk_colors[-1]
     
-            for class_id, score, bbox in zip(infer.ids, infer.scores, infer.bboxes):
-                x11, y11, x22, y22 = bbox
-                fire_radius = math.sqrt((x11-x22)**2+(y11-y22)**2)*0.5
+            for class_id, score, x1, y1, x2, y2 in results_fire:
+                x11, y11, x22, y22 = x1, y1, x2, y2
+                # fire_radius = math.sqrt((x11-x22)**2+(y11-y22)**2)*0.5
                 fire_center = ((x11+x22)//2,(y11+y22)//2)
                 # 绘制边界框
-                if class_id == 0:
-                    cv2.rectangle(draw_img, (x11, y11), (x22, y22), last_color, 2)
-                    infer.draw_detection(draw_img, (x11, y11, x22, y22), score, class_id, infer.labelname)
-                    # 在zeros掩码图中填充相同颜色（实心矩形）
-                    zeros[y11:y22, x11:x22, :] = last_color
+                
+                cv2.rectangle(draw_img, (x11, y11), (x22, y22), last_color, 2)
+                draw_detection_fire(draw_img, (x11, y11, x22, y22), score, class_id)
+                # 在zeros掩码图中填充相同颜色（实心矩形）
+                zeros[y11:y22, x11:x22, :] = last_color
 
         add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
         #融合图像显示
         cv2.imshow("add_result",add_result)
+        # cv2.imwrite(os.path.join(output_folder, "/app/my_project/photo/2.png"), add_result)
         
         #发送给主机图像
         # message = "1"
@@ -560,10 +694,10 @@ def main_map():
 
         # # 发送数据长度和图像数据
         # client_socket.sendall(struct.pack("L", len(data1)) + data1)
-        # #透视变换
-        # zeros=process(zeros)
+        #透视变换
+        zeros=process(zeros)
         #缩小地图与寻路
-        
+
 
         print(t2)
         if Buildmap:
@@ -573,13 +707,13 @@ def main_map():
             if car_center_pianyi == 0:
                 car_center_pianyi=1
                 if car_center[0]<384:
-                    start_x= car_center[0]+0.05*abs(car_center[0]-384)
+                    start_x= car_center[0]+0.06*abs(car_center[0]-384)
                 else:
-                    start_x= car_center[0]-0.05*abs(car_center[0]-384)
+                    start_x= car_center[0]-0.06*abs(car_center[0]-384)
                 if car_center[1]<288:
-                    start_y= car_center[1]+0.05*abs(car_center[1]-288)
+                    start_y= car_center[1]+0.06*abs(car_center[1]-288)
                 else:
-                    start_y= car_center[1]-0.05*abs(car_center[1]-288)
+                    start_y= car_center[1]-0.06*abs(car_center[1]-288)
 
             #画起点
             cv2.circle(zeros, (int(start_x), int(start_y)), 5, (0, 255, 0), -1)
@@ -663,7 +797,7 @@ def main_map():
                     "x": int(fire_center[0]/zoomm),
                     "y": int(fire_center[1]/zoomm)
                 },
-                "car_radius": 9,
+                "car_radius": 8,
                 "fire_radius": 8,
             }
             json_str = json.dumps(data).encode('utf-8')
@@ -696,13 +830,13 @@ def main_map():
             if not json_parsed:
                 try:
                     data_list = json.loads(read_paths.strip(b'\x00'))
-                    if data_list != {"Error":"No available path found."}:
+                    if data_list != {'Error': 'No available path found.'}:
                         json_parsed = True  # 标记为已解析
-                    print("JSON 解析成功，数据已加载")
+                        print("JSON 解析成功，数据已加载")
                 except json.JSONDecodeError as e:
                     print(f"JSON 解析失败: {e}")
             
-            all_data=[]
+            
             print(data_list)
 
             print('car_center',int(start_x/zoomm),int(start_y/zoomm))
@@ -736,10 +870,13 @@ def main_map():
                         
                 except json.JSONDecodeError as e:
                     print(f"错误：无法解析 JSON 字符串: {item}，错误信息: {e}")
+                    continue  # 跳过当前循环，继续处理下一个 JSON 对象
                 except (ValueError, TypeError) as e:
                     print(f"错误：'Distance' 或 'Direction' 不是有效数值: {e}")
+                    continue  # 跳过当前循环，继续处理下一个 JSON 对象
                 except AttributeError as e:
                     print(f"错误：对象类型错误，不是字典: {type(item)}，错误信息: {e}")
+                    continue  # 跳过当前循环，继续处理下一个 JSON 对象
                 
                 # rdistance=abs(json_obj["Distance"])
                 # rangle=360-abs(json_obj["Direction"])
@@ -794,10 +931,14 @@ def main_map():
                 # 比例！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！    
                 end_x = start_x + distance * math.cos(angle_rad)/23.5*zoomm#前是实际与低像素图比例，后是图片像素比
                 end_y = start_y - distance * math.sin(angle_rad)/23.5*zoomm
+                #记住路径
+                path_points.append( (start_x, start_y, end_x, end_y) )
                 #画路径
                 cv2.line(zeros, (int(start_x), int(start_y)), (int(end_x), int(end_y)), (0, 255, 0), 2)
                 start_x, start_y = end_x, end_y
-
+            #循环外画路径
+            # for (s_x, s_y, e_x, e_y) in path_points:
+            #     cv2.line(zeros, (int(s_x), int(s_y)), (int(e_x), int(e_y)), (0, 255, 0), 2)
             # 通知 C++ 开始处理
             os.write(efd, struct.pack('Q', 1))  # 发送 64-bit 整数 1
             # os.close(efd)
@@ -814,8 +955,18 @@ def main_map():
             #画火焰点
             cv2.circle(zeros, (int(fire_center[0]), int(fire_center[1])), 15, (0, 0, 255), -1)
 
+            cv2.imshow("Mask",zeros)
+            # if abs(car_center[0]-fire_center[0])<100 and abs(car_center[1]-fire_center[1])<100 and car_center[0]!=0 and fire_center[0]!=0:
+            for (s_x, s_y, e_x, e_y) in path_points:
+                cv2.line(zeros, (int(s_x), int(s_y)), (int(e_x), int(e_y)), (0, 255, 0), 2)
+                cv2.imshow("Mask",zeros)
+            # wait_for_complete(ser,all_data)
+            wait_for_fire(ser)
+            turn_back_and_land(ser3)
+
         #掩码显示
         cv2.imshow("Mask",zeros)
+        # cv2.imwrite(os.path.join(output_folder, "/app/my_project/photo/1.png"), zeros)
         
         # # 发送给主机图像
         # message = "2"
@@ -1155,7 +1306,7 @@ class YOLO11_Seg():
 
 coco_names1 = ["background","person","knife","fork","cup","giraffe","plate","table","cake","fence","hat","terrain","tree","car"]
 coco_names= ["background","terrain","tree","car-tou","car-wei"]
-
+coco_names_fire = ["fire","smoke"]
 rdk_colors = [
     (56, 56, 255), (151, 157, 255), (236, 24, 0), (255, 56, 132),(49, 210, 207), (10, 249, 72), (23, 204, 146), (134, 219, 61),
     (52, 147, 26), (187, 212, 0), (168, 153, 44), (255, 194, 0),(147, 69, 52), (255, 115, 100), (236, 24, 0), (255, 56, 132),
@@ -1182,11 +1333,38 @@ def draw_detection(img, bbox, score, class_id) -> None:
     )
     cv2.putText(img, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
-if __name__ == "__main__":
-    ftp_thread = threading.Thread(target=main_map)
-    yolo_thread = threading.Thread(target=ftp_server)
+def draw_detection_fire(img, bbox, score, class_id) -> None:
+    """
+    Draws a detection bounding box and label on the image.
 
-    # 启动线程
-    ftp_thread.start()
-    yolo_thread.start()
-    # main_map()
+    Parameters:
+        img (np.array): The input image.
+        bbox (tuple[int, int, int, int]): A tuple containing the bounding box coordinates (x1, y1, x2, y2).
+        score (float): The detection score of the object.
+        class_id (int): The class ID of the detected object.
+    """
+    x1, y1, x2, y2 = bbox
+    color = rdk_colors[class_id%20]
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+    label = f"{coco_names_fire[class_id]}: {score:.2f}"
+    (label_width, label_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+    label_x, label_y = x1, y1 - 10 if y1 - 10 > label_height else y1 + 10
+    cv2.rectangle(
+        img, (label_x, label_y - label_height), (label_x + label_width, label_y + label_height), color, cv2.FILLED
+    )
+    cv2.putText(img, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+
+if __name__ == "__main__":
+    # ftp_thread = threading.Thread(target=main_map)
+    # yolo_thread = threading.Thread(target=fly_control,args=(ser,ser3,all_data))
+
+    # # # # 启动线程
+
+    # ftp_thread.start()
+    # yolo_thread.start()
+
+    # ftp_thread.join()
+    # yolo_thread.join()
+    main_map()
+    # while True:
+    #     sleep(1)
