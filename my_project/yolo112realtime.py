@@ -90,6 +90,45 @@ def print_properties(pro):
     print("layout:", pro.layout)
     print("shape:", pro.shape)
 
+def binarize_image_to_array(image, target_color, tolerance=30):
+    """
+    将图片二值化并转换为二维数组
+    
+    参数:
+    image (str/numpy.ndarray): 图片路径或图片数组
+    target_color (tuple): 目标颜色，格式为(B,G,R)
+    tolerance (int): 颜色匹配容忍度，值越大匹配范围越广
+    
+    返回:
+    numpy.ndarray: 二值化后的二维数组，黑色为0，白色为1
+    """
+    # 判断输入是路径还是数组
+    if isinstance(image, str):
+        # 如果是路径，则读取图片
+        img = cv2.imread(image)
+        if img is None:
+            raise ValueError(f"无法读取图片: {image}")
+    else:
+        # 如果是数组，直接使用
+        img = image
+    
+    # 创建二值化掩码
+    # 黑色区域
+    black_mask = cv2.inRange(img, (0, 0, 0), (50, 50, 50))
+    
+    # 目标颜色区域
+    lower_bound = np.array([max(0, c - tolerance) for c in target_color])
+    upper_bound = np.array([min(255, c + tolerance) for c in target_color])
+    color_mask = cv2.inRange(img, lower_bound, upper_bound)
+    
+    # 合并掩码（黑色和目标颜色都变为黑色(0)）
+    combined_mask = cv2.bitwise_or(black_mask, color_mask)
+    
+    # 将合并后的掩码转换为0和1的二维数组
+    # 黑色区域(0)保持为0，其他区域(255)变为1
+    binary_array = np.where(combined_mask == 0, 0, 1)
+    
+    return binary_array
 
 def main_map():
     parser = argparse.ArgumentParser()
@@ -113,7 +152,7 @@ def main_map():
     parser.add_argument('--is-point', type=bool, default=True, help='Ture: Draw edge points')
     opt = parser.parse_args()
     logger.info(opt)
-
+    i=0
     # 实例化
     model = YOLO11_Seg(opt)
 
@@ -176,6 +215,9 @@ def main_map():
         draw_img = img.copy()
         zeros = np.zeros((img.shape[0],img.shape[1],3), dtype=np.uint8)
         for class_id, score, x1, y1, x2, y2, mask in results:
+            #提取半径
+            # if class_id==13:
+            #     radius = cv2.sqrt((x2-x1)**2 + (y2-y1)**2)/2
             # Detect
             print("(%d, %d, %d, %d) -> %s: %.2f"%(x1,y1,x2,y2, coco_names[class_id], score))
             draw_detection(draw_img, (x1, y1, x2, y2), score, class_id)
@@ -218,7 +260,12 @@ def main_map():
         add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
         cv2.imshow("Mask",zeros)
         cv2.imshow("add_result",add_result)
-        
+        i+=1
+        if(i==10000):
+            i=0
+        if(i==10):
+            map=binarize_image_to_array(zeros,(199, 55, 255))
+
         key = cv2.waitKey(1) & 0xFF
         if key == 27 or key == ord('q'):  # ESC键或q键
             break

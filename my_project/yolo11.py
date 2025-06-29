@@ -22,7 +22,7 @@ import numpy as np
 from scipy.special import softmax
 # from scipy.special import expit as sigmoid
 from hobot_dnn import pyeasy_dnn as dnn  # BSP Python API
-
+from pathfinder import search_path
 from time import time
 import argparse
 import logging
@@ -35,37 +35,101 @@ logging.basicConfig(
     datefmt='%H:%M:%S')
 logger = logging.getLogger("RDK_YOLO")
 
-# def generate_class_mask(results, img_shape):
-#     """生成按类别ID标记的掩码图"""
-#     h, w = img_shape[:2]
-#     class_mask = np.zeros((h, w), dtype=np.uint8)
+def pixelate_mask(mask, target_size=100, quality=2.0):
+    """
+    对掩码进行低像素化处理并直接输出小尺寸图片
     
-#     for class_id, score, x1, y1, x2, y2, mask in results:
-#         # 确保边界框坐标有效且为整数
-#         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-#         x1 = max(0, x1)
-#         y1 = max(0, y1)
-#         x2 = min(w, x2)  # w是图像宽度
-#         y2 = min(h, y2)  # h是图像高度
-        
-#         # 计算ROI区域大小
-#         roi_height = y2 - y1
-#         roi_width = x2 - x1
-        
-#         # 跳过无效的边界框
-#         if roi_height <= 0 or roi_width <= 0:
-#             continue
-            
-#         # 确保掩码尺寸与ROI区域一致
-#         if mask.shape != (roi_height, roi_width):
-#             # 使用最近邻插值保持二值特性
-#             mask = cv2.resize(mask, (roi_width, roi_height), interpolation=cv2.INTER_NEAREST)
-        
-#         # 应用掩码（使用更安全的索引方式）
-#         roi = class_mask[y1:y2, x1:x2]
-#         roi[mask == 1] = class_id + 1  # 类别ID从1开始
+    参数:
+    mask: 原始掩码图 (numpy数组)
+    target_size: 目标尺寸的最小边长 (像素数)
+    quality: 质量因子，控制插值和滤波强度
     
-#     return class_mask
+    返回:
+    低像素化后的小尺寸掩码图 (numpy数组)
+    """
+    # 确保输入是二维或三维数组
+    if len(mask.shape) == 2:
+        h, w = mask.shape
+        is_gray = True
+    elif len(mask.shape) == 3:
+        h, w, c = mask.shape
+        is_gray = c == 1
+    else:
+        raise ValueError("输入掩码必须是二维或三维数组")
+    
+    # 计算降采样比例
+    scale = min(target_size / h, target_size / w)
+    target_h, target_w = int(h * scale), int(w * scale)
+    
+    # 如果目标尺寸已大于原图，则不处理
+    if target_h >= h and target_w >= w:
+        return mask.astype(np.uint8)
+    
+    # 降采样（保持宽高比）
+    if is_gray:
+        downsampled = cv2.resize(mask, (target_w, target_h), 
+                                interpolation=cv2.INTER_AREA)
+    else:
+        downsampled = cv2.resize(mask, (target_w, target_h), 
+                                interpolation=cv2.INTER_AREA)
+    
+    # 计算高斯核大小（确保为正奇数）
+    kernel_size = max(1, int(3 * quality))
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    
+    # 应用抗锯齿滤波
+    if is_gray:
+        blurred = cv2.GaussianBlur(downsampled, (kernel_size, kernel_size), quality/2)
+    else:
+        blurred = cv2.GaussianBlur(downsampled, (kernel_size, kernel_size), quality/2)
+    
+    # 二值化处理（仅对单通道掩码）
+    if is_gray:
+        _, pixelated = cv2.threshold(blurred, 0.5, 255, cv2.THRESH_BINARY)
+        return pixelated.astype(np.uint8)
+    else:
+        return blurred.astype(np.uint8)
+
+def binarize_image_to_array(image, target_color, tolerance=30):
+    """
+    将图片二值化并转换为二维数组
+    
+    参数:
+    image (str/numpy.ndarray): 图片路径或图片数组
+    target_color (tuple): 目标颜色，格式为(B,G,R)
+    tolerance (int): 颜色匹配容忍度，值越大匹配范围越广
+    
+    返回:
+    numpy.ndarray: 二值化后的二维数组，黑色为0，白色为1
+    """
+    # 判断输入是路径还是数组
+    if isinstance(image, str):
+        # 如果是路径，则读取图片
+        img = cv2.imread(image)
+        if img is None:
+            raise ValueError(f"无法读取图片: {image}")
+    else:
+        # 如果是数组，直接使用
+        img = image
+    
+    # 创建二值化掩码
+    # 黑色区域
+    black_mask = cv2.inRange(img, (0, 0, 0), (50, 50, 50))
+    
+    # 目标颜色区域
+    lower_bound = np.array([max(0, c - tolerance) for c in target_color])
+    upper_bound = np.array([min(255, c + tolerance) for c in target_color])
+    color_mask = cv2.inRange(img, lower_bound, upper_bound)
+    
+    # 合并掩码（黑色和目标颜色都变为黑色(0)）
+    combined_mask = cv2.bitwise_or(black_mask, color_mask)
+    
+    # 将合并后的掩码转换为0和1的二维数组
+    # 黑色区域(0)保持为0，其他区域(255)变为1
+    binary_array = (combined_mask == 0).tolist()
+    
+    return binary_array
 
 def main():
     parser = argparse.ArgumentParser()
@@ -89,7 +153,7 @@ def main():
     parser.add_argument('--is-point', type=bool, default=True, help='Ture: Draw edge points')
     opt = parser.parse_args()
     logger.info(opt)
-
+    
     # 实例化
     model = YOLO11_Seg(opt)
     # 读图
@@ -135,9 +199,17 @@ def main():
     # 可视化, 这里采用直接相加的方式，实际应用中对Mask一般不需要Resize这些操作
     add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
     # 保存结果
+
+    map2=pixelate_mask(zeros,150)
+    cv2.imwrite(opt.mask_save_path, map2)
+
+    map2=binarize_image_to_array(map2,(199, 55, 255))
+    # print(map1)
+    result = search_path(map2,(8, 8),(142, 142),5,5)
+    print(result)
     cv2.imwrite(opt.img_save_path, np.hstack((draw_img, zeros, add_result)))
     # 单独保存掩码图
-    cv2.imwrite(opt.mask_save_path, zeros)
+    
     logger.info("\033[1;32m" + f"saved combined result in path: \"./{opt.img_save_path}\"" + "\033[0m")
     logger.info("\033[1;32m" + f"saved mask result in path: \"./{opt.mask_save_path}\"" + "\033[0m")
     # # 在main()函数中，后处理完成后添加以下代码
