@@ -28,7 +28,11 @@ import argparse
 import logging
 import ctypes
 import os
+import math
+
 from firstBSPrealtime import BPU_Detect
+from serial1 import sending_data
+from pathfinder import search_path
 
 # 日志模块配置
 # logging configs
@@ -90,6 +94,62 @@ def print_properties(pro):
     print("layout:", pro.layout)
     print("shape:", pro.shape)
 
+def pixelate_mask(mask, target_size=100, quality=2.0):
+    """
+    对掩码进行低像素化处理并直接输出小尺寸图片
+    
+    参数:
+    mask: 原始掩码图 (numpy数组)
+    target_size: 目标尺寸的最小边长 (像素数)
+    quality: 质量因子，控制插值和滤波强度
+    
+    返回:
+    低像素化后的小尺寸掩码图 (numpy数组)
+    """
+    # 确保输入是二维或三维数组
+    if len(mask.shape) == 2:
+        h, w = mask.shape
+        is_gray = True
+    elif len(mask.shape) == 3:
+        h, w, c = mask.shape
+        is_gray = c == 1
+    else:
+        raise ValueError("输入掩码必须是二维或三维数组")
+    
+    # 计算降采样比例
+    scale = min(target_size / h, target_size / w)
+    target_h, target_w = int(h * scale), int(w * scale)
+    
+    # 如果目标尺寸已大于原图，则不处理
+    if target_h >= h and target_w >= w:
+        return mask.astype(np.uint8)
+    
+    # 降采样（保持宽高比）
+    if is_gray:
+        downsampled = cv2.resize(mask, (target_w, target_h), 
+                                interpolation=cv2.INTER_AREA)
+    else:
+        downsampled = cv2.resize(mask, (target_w, target_h), 
+                                interpolation=cv2.INTER_AREA)
+    
+    # 计算高斯核大小（确保为正奇数）
+    kernel_size = max(1, int(3 * quality))
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    
+    # 应用抗锯齿滤波
+    if is_gray:
+        blurred = cv2.GaussianBlur(downsampled, (kernel_size, kernel_size), quality/2)
+    else:
+        blurred = cv2.GaussianBlur(downsampled, (kernel_size, kernel_size), quality/2)
+    
+    # 二值化处理（仅对单通道掩码）
+    if is_gray:
+        _, pixelated = cv2.threshold(blurred, 0.5, 255, cv2.THRESH_BINARY)
+        return pixelated.astype(np.uint8)
+    else:
+        return blurred.astype(np.uint8)
+
 def binarize_image_to_array(image, target_color, tolerance=30):
     """
     将图片二值化并转换为二维数组
@@ -132,7 +192,7 @@ def binarize_image_to_array(image, target_color, tolerance=30):
 
 def main_map():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model-path', type=str, default='/app/my_project/bin/converted_model_modified3.bin', 
+    parser.add_argument('--model-path', type=str, default='/app/my_project/bin/converted_model_modified5.bin', 
                         help="""Path to BPU Quantized *.bin Model.
                                 RDK X3(Module): Bernoulli2.
                                 RDK Ultra: Bayes.
@@ -143,9 +203,9 @@ def main_map():
     # parser.add_argument('--test-img', type=str, default='/app/my_project/v8seg-photo/微信图片_20250615124202.jpg', help='Path to Load Test Image.')
     # parser.add_argument('--mask-save-path', type=str, default='/app/my_project/v8seg-photo/mask.jpg', help='Path to Save Mask Image.')
     # parser.add_argument('--img-save-path', type=str, default='/app/my_project/v8seg-photo/result.jpg', help='Path to Load Test Image.')
-    parser.add_argument('--classes-num', type=int, default=14, help='Classes Num to Detect.')
+    parser.add_argument('--classes-num', type=int, default=5, help='Classes Num to Detect.')
     parser.add_argument('--nms-thres', type=float, default=0.7, help='IoU threshold.')
-    parser.add_argument('--score-thres', type=float, default=0.25, help='confidence threshold.')
+    parser.add_argument('--score-thres', type=float, default=0.8, help='confidence threshold.')
     parser.add_argument('--reg', type=int, default=16, help='DFL reg layer.')
     parser.add_argument('--mc', type=int, default=32, help='Mask Coefficients')
     parser.add_argument('--is-open', type=bool, default=True, help='Ture: morphologyEx')
@@ -214,17 +274,41 @@ def main_map():
         # 绘制
         draw_img = img.copy()
         zeros = np.zeros((img.shape[0],img.shape[1],3), dtype=np.uint8)
-        for class_id, score, x1, y1, x2, y2, mask in results:
-            #提取半径
-            # if class_id==13:
-            #     radius = cv2.sqrt((x2-x1)**2 + (y2-y1)**2)/2
-            # Detect
+        # 类别计数
+        class_counters = {}
+        for class_id, score, x1, y1, x2, y2, mask in results:                
+            # 计算车的实施方向
+            if class_id == 3:
+                tou = ((x1 + x2) // 2, (y1 + y2) // 2)
+            if class_id == 4:
+                wei = ((x1 + x2) // 2, (y1 + y2) // 2)
+
+            try:
+                dx = tou[0]-wei[0]
+                dy = tou[1]-wei[1]
+                #提取半径
+                car_center=((tou[0]+wei[0])//2,(tou[1]+wei[1])//2)
+                car_radius=abs(dy-dx)*0.75
+
+                # 计算弧度角，注意：atan2 参数是 (y, x)
+                angle_rad = math.atan2(dy, dx)
+
+                # 转换为角度，并调整范围到 [0, 360)
+                angle_deg = 360-math.degrees(angle_rad)
+                if angle_deg < 0:
+                    angle_deg += 360
+                if angle_deg > 360:
+                    angle_deg -= 360
+                print(f"Direction Angle: {angle_deg:.2f}°")
+            except NameError as e:
+                print("缺少车头或车尾位置信息，无法计算方向。")
+
             print("(%d, %d, %d, %d) -> %s: %.2f"%(x1,y1,x2,y2, coco_names[class_id], score))
             draw_detection(draw_img, (x1, y1, x2, y2), score, class_id)
             # Instance Segment
             if mask.size == 0:
                 continue
-            mask = cv2.resize(mask, (int(x2-x1), int(y2-y1)), interpolation=cv2.INTER_LANCZOS4)
+            mask = cv2.resize(mask, (int(x2-x1), int(y2-y1)), interpolation=cv2.INTER_LINEAR)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, model.kernel_for_morphologyEx, 1) if opt.is_open else mask      
             zeros[y1:y2,x1:x2, :][mask == 1] = rdk_colors[(class_id-1)%20]
             # points
@@ -243,13 +327,25 @@ def main_map():
                 points = np.array([[[int(x), int(y)] for x, y in merged_points]], dtype=np.int32)
                 # 绘制轮廓
                 cv2.polylines(draw_img, points, isClosed=True, color=rdk_colors[(class_id-1)%20], thickness=4)
-
-        if len(infer.ids) != 0: # 假设有其他结果
+             
+            # 更新类别计数器
+            if class_id in class_counters:
+                class_counters[class_id] += 1
+            else:
+                class_counters[class_id] = 1
+            if class_counters[1] == 7 and class_counters[2] == 4 and class_counters[3] == 1 and class_counters[4] == 1 and len(infer.ids) > 0:
+                Buildmap=1
+            else:
+                Buildmap=0    
+        #把火焰方框添加到掩码图中        
+        if len(infer.ids) != 0: 
             # 获取rdk_colors的最后一个颜色
             last_color = rdk_colors[-1]
     
             for class_id, score, bbox in zip(infer.ids, infer.scores, infer.bboxes):
                 x11, y11, x22, y22 = bbox
+                fire_radius = math.sqrt((x11-x22)**2+(y11-y22)**2)*0.5
+                fire_center = ((x11+x22)//2,(y11+y22)//2)
                 # 绘制边界框
                 if class_id == 0:
                     cv2.rectangle(draw_img, (x11, y11), (x22, y22), last_color, 2)
@@ -258,13 +354,34 @@ def main_map():
                     zeros[y11:y22, x11:x22, :] = last_color
 
         add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
-        cv2.imshow("Mask",zeros)
+        #融合图像显示
         cv2.imshow("add_result",add_result)
-        i+=1
-        if(i==10000):
-            i=0
-        if(i==10):
-            map=binarize_image_to_array(zeros,(199, 55, 255))
+        
+        #缩小地图与寻路
+        if Buildmap:
+            t0 = time()
+            map2=pixelate_mask(zeros,250)
+            map2=binarize_image_to_array(map2,(199, 55, 255))
+            result = search_path(map2,car_center,fire_center,car_radius,fire_radius)
+            for r in result:
+                print(r.angle,r.distance)
+                #如果车的角度比要前进的角度大，则先负转弯，再前进
+                angle_deg=int(r.angle- angle_deg)
+                distance=int(r.distance)
+                if angle_deg > r.angle:
+                    sending_data(0x54,2,angle_deg/255,angle_deg%255,0x45)
+                    sending_data(0x54,0,distance/255,distance%255,0x45)
+                #如果车的角度比要前进的角度小，则先正转弯，再前进    
+                else :
+                    sending_data(0x54,1,angle_deg/255,angle_deg%255,0x45)
+                    sending_data(0x54,0,distance/255,distance%255,0x45)    
+                # end_x = start_x + length * math.cos(angle_rad)
+                # end_y = start_y + length * math.sin(angle_rad)
+            t1 = time()
+            print("forward time is :", (t1 - t0))
+        
+        #掩码显示
+        cv2.imshow("Mask",zeros)
 
         key = cv2.waitKey(1) & 0xFF
         if key == 27 or key == ord('q'):  # ESC键或q键
@@ -346,16 +463,27 @@ class YOLO11_Seg():
         logger.info(f"{self.weights_static.shape = }")
 
         # anchors, 只需要生成一次
-        self.s_anchor = np.stack([np.tile(np.linspace(0.5, 79.5, 80), reps=80), 
-                            np.repeat(np.arange(0.5, 80.5, 1), 80)], axis=0).transpose(1,0)
-        self.m_anchor = np.stack([np.tile(np.linspace(0.5, 39.5, 40), reps=40), 
-                            np.repeat(np.arange(0.5, 40.5, 1), 40)], axis=0).transpose(1,0)
-        self.l_anchor = np.stack([np.tile(np.linspace(0.5, 19.5, 20), reps=20), 
-                            np.repeat(np.arange(0.5, 20.5, 1), 20)], axis=0).transpose(1,0)
+        # self.s_anchor = np.stack([np.tile(np.linspace(0.5, 79.5, 80), reps=80), 
+        #                     np.repeat(np.arange(0.5, 80.5, 1), 80)], axis=0).transpose(1,0)
+        # self.m_anchor = np.stack([np.tile(np.linspace(0.5, 39.5, 40), reps=40), 
+        #                     np.repeat(np.arange(0.5, 40.5, 1), 40)], axis=0).transpose(1,0)
+        # self.l_anchor = np.stack([np.tile(np.linspace(0.5, 19.5, 20), reps=20), 
+        #                     np.repeat(np.arange(0.5, 20.5, 1), 20)], axis=0).transpose(1,0)
+
+        # 小目标检测层（s_anchor）：原尺寸 80x80 -> 新尺寸 96x72
+        self.s_anchor = np.stack([np.tile(np.linspace(0.5, 95.5, 96), reps=72),
+                          np.repeat(np.arange(0.5, 72.5, 1), 96)], axis=0).transpose(1, 0)
+        # 中目标检测层（m_anchor）：原尺寸 40x40 -> 新尺寸 48x36
+        self.m_anchor = np.stack([np.tile(np.linspace(0.5, 47.5, 48), reps=36),
+                          np.repeat(np.arange(0.5, 36.5, 1), 48)], axis=0).transpose(1, 0)
+        # 大目标检测层（l_anchor）：原尺寸 20x20 -> 新尺寸 24x18
+        self.l_anchor = np.stack([np.tile(np.linspace(0.5, 23.5, 24), reps=18),
+                          np.repeat(np.arange(0.5, 18.5, 1), 24)], axis=0).transpose(1, 0)
+
         logger.info(f"{self.s_anchor.shape = }, {self.m_anchor.shape = }, {self.l_anchor.shape = }")
 
         # 输入图像大小, 一些阈值, 提前计算好
-        self.input_image_size = 640
+        self.input_image_size = (576, 768)
         self.SCORE_THRESHOLD = opt.score_thres
         self.NMS_THRESHOLD = opt.nms_thres
         self.CONF_THRES_RAW = -np.log(1/self.SCORE_THRESHOLD - 1)
@@ -365,7 +493,7 @@ class YOLO11_Seg():
         self.input_H, self.input_W = self.quantize_model[0].inputs[0].properties.shape[2:4]
         logger.info(f"{self.input_H = }, {self.input_W = }")
 
-        self.Mask_H, self.Mask_W = 160, 160
+        self.Mask_H, self.Mask_W = 144, 192
         self.x_scale_corp = self.Mask_W / self.input_W
         self.y_scale_corp = self.Mask_H / self.input_H
         logger.info(f"{self.Mask_H = }   {self.Mask_W = }")
@@ -581,7 +709,8 @@ class YOLO11_Seg():
 
         return results
 
-coco_names = ["background","person","knife","fork","cup","giraffe","plate","table","cake","fence","hat","terrain","tree","car"]
+coco_names1 = ["background","person","knife","fork","cup","giraffe","plate","table","cake","fence","hat","terrain","tree","car"]
+coco_names= ["background","terrain","tree","car-tou","car-wei"]
 
 rdk_colors = [
     (56, 56, 255), (151, 157, 255), (31, 112, 255), (29, 178, 255),(49, 210, 207), (10, 249, 72), (23, 204, 146), (134, 219, 61),

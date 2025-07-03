@@ -93,7 +93,7 @@ def print_properties(pro):
 
 def main_map():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model-path', type=str, default='/app/my_project/bin/converted_model_modified3.bin', 
+    parser.add_argument('--model-path', type=str, default='/app/my_project/bin/converted_model_modified5.bin', 
                         help="""Path to BPU Quantized *.bin Model.
                                 RDK X3(Module): Bernoulli2.
                                 RDK Ultra: Bayes.
@@ -104,9 +104,9 @@ def main_map():
     # parser.add_argument('--test-img', type=str, default='/app/my_project/v8seg-photo/微信图片_20250615124202.jpg', help='Path to Load Test Image.')
     # parser.add_argument('--mask-save-path', type=str, default='/app/my_project/v8seg-photo/mask.jpg', help='Path to Save Mask Image.')
     # parser.add_argument('--img-save-path', type=str, default='/app/my_project/v8seg-photo/result.jpg', help='Path to Load Test Image.')
-    parser.add_argument('--classes-num', type=int, default=14, help='Classes Num to Detect.')
+    parser.add_argument('--classes-num', type=int, default=5, help='Classes Num to Detect.')
     parser.add_argument('--nms-thres', type=float, default=0.7, help='IoU threshold.')
-    parser.add_argument('--score-thres', type=float, default=0.25, help='confidence threshold.')
+    parser.add_argument('--score-thres', type=float, default=0.8, help='confidence threshold.')
     parser.add_argument('--reg', type=int, default=16, help='DFL reg layer.')
     parser.add_argument('--mc', type=int, default=32, help='Mask Coefficients')
     parser.add_argument('--is-open', type=bool, default=True, help='Ture: morphologyEx')
@@ -150,7 +150,7 @@ def main_map():
             print("Failed to get image from usb camera")
             continue
 
-        des_dim = (1024, 768)
+        des_dim = (768, 576)
 
         # 读图
         img = cv2.resize(frame, des_dim, interpolation=cv2.INTER_AREA)
@@ -174,7 +174,7 @@ def main_map():
             # Instance Segment
             if mask.size == 0:
                 continue
-            mask = cv2.resize(mask, (int(x2-x1), int(y2-y1)), interpolation=cv2.INTER_LANCZOS4)
+            mask = cv2.resize(mask, (int(x2-x1), int(y2-y1)), interpolation=cv2.INTER_LINEAR)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, model.kernel_for_morphologyEx, 1) if opt.is_open else mask      
             zeros[y1:y2,x1:x2, :][mask == 1] = rdk_colors[(class_id-1)%20]
             # points
@@ -278,16 +278,26 @@ class YOLO11_Seg():
         logger.info(f"{self.weights_static.shape = }")
 
         # anchors, 只需要生成一次
-        self.s_anchor = np.stack([np.tile(np.linspace(0.5, 79.5, 80), reps=80), 
-                            np.repeat(np.arange(0.5, 80.5, 1), 80)], axis=0).transpose(1,0)
-        self.m_anchor = np.stack([np.tile(np.linspace(0.5, 39.5, 40), reps=40), 
-                            np.repeat(np.arange(0.5, 40.5, 1), 40)], axis=0).transpose(1,0)
-        self.l_anchor = np.stack([np.tile(np.linspace(0.5, 19.5, 20), reps=20), 
-                            np.repeat(np.arange(0.5, 20.5, 1), 20)], axis=0).transpose(1,0)
+        # self.s_anchor = np.stack([np.tile(np.linspace(0.5, 79.5, 80), reps=80), 
+        #                     np.repeat(np.arange(0.5, 80.5, 1), 80)], axis=0).transpose(1,0)
+        # self.m_anchor = np.stack([np.tile(np.linspace(0.5, 39.5, 40), reps=40), 
+        #                     np.repeat(np.arange(0.5, 40.5, 1), 40)], axis=0).transpose(1,0)
+        # self.l_anchor = np.stack([np.tile(np.linspace(0.5, 19.5, 20), reps=20), 
+        #                     np.repeat(np.arange(0.5, 20.5, 1), 20)], axis=0).transpose(1,0)
+         # 小目标检测层（s_anchor）：原尺寸 80x80 -> 新尺寸 96x72
+        self.s_anchor = np.stack([np.tile(np.linspace(0.5, 95.5, 96), reps=72),
+                          np.repeat(np.arange(0.5, 72.5, 1), 96)], axis=0).transpose(1, 0)
+        # 中目标检测层（m_anchor）：原尺寸 40x40 -> 新尺寸 48x36
+        self.m_anchor = np.stack([np.tile(np.linspace(0.5, 47.5, 48), reps=36),
+                          np.repeat(np.arange(0.5, 36.5, 1), 48)], axis=0).transpose(1, 0)
+        # 大目标检测层（l_anchor）：原尺寸 20x20 -> 新尺寸 24x18
+        self.l_anchor = np.stack([np.tile(np.linspace(0.5, 23.5, 24), reps=18),
+                          np.repeat(np.arange(0.5, 18.5, 1), 24)], axis=0).transpose(1, 0)
+
         logger.info(f"{self.s_anchor.shape = }, {self.m_anchor.shape = }, {self.l_anchor.shape = }")
 
         # 输入图像大小, 一些阈值, 提前计算好
-        self.input_image_size = 640
+        self.input_image_size = (576, 768)
         self.SCORE_THRESHOLD = opt.score_thres
         self.NMS_THRESHOLD = opt.nms_thres
         self.CONF_THRES_RAW = -np.log(1/self.SCORE_THRESHOLD - 1)
@@ -297,7 +307,7 @@ class YOLO11_Seg():
         self.input_H, self.input_W = self.quantize_model[0].inputs[0].properties.shape[2:4]
         logger.info(f"{self.input_H = }, {self.input_W = }")
 
-        self.Mask_H, self.Mask_W = 160, 160
+        self.Mask_H, self.Mask_W = 144, 192
         self.x_scale_corp = self.Mask_W / self.input_W
         self.y_scale_corp = self.Mask_H / self.input_H
         logger.info(f"{self.Mask_H = }   {self.Mask_W = }")
@@ -513,8 +523,8 @@ class YOLO11_Seg():
 
         return results
 
-coco_names = ["background","person","knife","fork","cup","giraffe","plate","table","cake","fence","hat","terrain","tree","car"]
-
+coco_names1 = ["background","person","knife","fork","cup","giraffe","plate","table","cake","fence","hat","terrain","tree","car"]
+coco_names= ["background","terrain","tree","car-tou","car-wei"]
 rdk_colors = [
     (56, 56, 255), (151, 157, 255), (31, 112, 255), (29, 178, 255),(49, 210, 207), (10, 249, 72), (23, 204, 146), (134, 219, 61),
     (52, 147, 26), (187, 212, 0), (168, 153, 44), (255, 194, 0),(147, 69, 52), (255, 115, 100), (236, 24, 0), (255, 56, 132),

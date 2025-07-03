@@ -285,7 +285,7 @@ def main_fire():
         # test_img = "/app/my_project/photo/0ce61215-6d34-49f9-aa6d-5f0feed430f8.jpg"
         models = "/app/my_project/bin/converted_model2.bin"
         # infer = BPU_Detect(models,coconame,conf=0.1,iou=0.3)
-        infer = BPU_Detect(models,coconame,conf=0.2,iou=0.3,mode = True)
+        infer = BPU_Detect(models,coconame,conf=0.5,iou=0.3,mode = True)
         # infer.detect(test_img,method_pre=1,method_post=1)
 
         while True:

@@ -26,7 +26,8 @@ from pathfinder import search_path
 from time import time
 import argparse
 import logging
-
+import math
+from serial1 import sending_data
 # 日志模块配置
 # logging configs
 logging.basicConfig(
@@ -133,7 +134,7 @@ def binarize_image_to_array(image, target_color, tolerance=30):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model-path', type=str, default='/app/my_project/bin/converted_model_modified3.bin', 
+    parser.add_argument('--model-path', type=str, default='/app/my_project/bin/converted_model_modified5.bin', 
                         help="""Path to BPU Quantized *.bin Model.
                                 RDK X3(Module): Bernoulli2.
                                 RDK Ultra: Bayes.
@@ -141,10 +142,10 @@ def main():
                                 RDK S100: Nash-e.
                                 RDK S100P: Nash-m.""") 
     # parser.add_argument('--test-img', type=str, default='../../../../resource/datasets/COCO2017/assets/bus.jpg', help='Path to Load Test Image.')
-    parser.add_argument('--test-img', type=str, default='/app/my_project/v8seg-photo/微信图片_20250615124202.jpg', help='Path to Load Test Image.')
+    parser.add_argument('--test-img', type=str, default='/app/0fe66fb599bb9750e49442ffd486100.jpg', help='Path to Load Test Image.')
     parser.add_argument('--mask-save-path', type=str, default='/app/my_project/v8seg-photo/mask.jpg', help='Path to Save Mask Image.')
     parser.add_argument('--img-save-path', type=str, default='/app/my_project/v8seg-photo/result.jpg', help='Path to Load Test Image.')
-    parser.add_argument('--classes-num', type=int, default=14, help='Classes Num to Detect.')
+    parser.add_argument('--classes-num', type=int, default=5, help='Classes Num to Detect.')
     parser.add_argument('--nms-thres', type=float, default=0.7, help='IoU threshold.')
     parser.add_argument('--score-thres', type=float, default=0.25, help='confidence threshold.')
     parser.add_argument('--reg', type=int, default=16, help='DFL reg layer.')
@@ -170,13 +171,38 @@ def main():
     draw_img = img.copy()
     zeros = np.zeros((img.shape[0],img.shape[1],3), dtype=np.uint8)
     for class_id, score, x1, y1, x2, y2, mask in results:
+        # 计算车的实施方向
+        if class_id == 3:
+            tou = ((x1 + x2) // 2, (y1 + y2) // 2)
+        if class_id == 4:
+            wei = ((x1 + x2) // 2, (y1 + y2) // 2)
+
+        try:
+            dx = tou[0]-wei[0]
+            dy = tou[1]-wei[1]
+
+            radius=abs(dy-dx)*0.75
+
+            # 计算弧度角，注意：atan2 参数是 (y, x)
+            angle_rad = math.atan2(dy, dx)
+
+            # 转换为角度，并调整范围到 [0, 360)
+            angle_deg = 360-math.degrees(angle_rad)
+            if angle_deg < 0:
+                angle_deg += 360
+            if angle_deg > 360:
+                angle_deg -= 360
+            print(f"Direction Angle: {angle_deg:.2f}°")
+        except NameError as e:
+            print("缺少车头或车尾位置信息，无法计算方向。")
+
         # Detect
         print("(%d, %d, %d, %d) -> %s: %.2f"%(x1,y1,x2,y2, coco_names[class_id], score))
         draw_detection(draw_img, (x1, y1, x2, y2), score, class_id)
         # Instance Segment
         if mask.size == 0:
             continue
-        mask = cv2.resize(mask, (int(x2-x1), int(y2-y1)), interpolation=cv2.INTER_LANCZOS4)
+        mask = cv2.resize(mask, (int(x2-x1), int(y2-y1)), interpolation=cv2.INTER_LINEAR)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, model.kernel_for_morphologyEx, 1) if opt.is_open else mask      
         zeros[y1:y2,x1:x2, :][mask == 1] = rdk_colors[(class_id-1)%20]
         # points
@@ -200,13 +226,36 @@ def main():
     add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
     # 保存结果
 
-    map2=pixelate_mask(zeros,150)
+    t0 = time()
+    map2=pixelate_mask(zeros,100)
     cv2.imwrite(opt.mask_save_path, map2)
 
     map2=binarize_image_to_array(map2,(199, 55, 255))
-    # print(map1)
-    result = search_path(map2,(8, 8),(142, 142),5,5)
-    print(result)
+    
+    result = search_path(map2,(3, 3),(97, 72),2,2)
+    # print(result.angle,result.distance)
+    for r in result:
+        print(r.angle,r.distance)
+        #如果车的角度比要前进的角度大，则先负转弯，再前进
+        target_angle=abs(int(angle_deg-r.angle))
+        distance=int(r.distance)
+        if angle_deg > r.angle:
+            sending_data(0x54,2,target_angle/255,target_angle%255,0x45)
+            sending_data(0x54,0,distance/255,distance%255,0x45)
+            angle_deg=angle_deg-target_angle
+            if angle_deg < 0:
+                angle_deg += 360
+        #如果车的角度比要前进的角度小，则先正转弯，再前进    
+        else :
+            sending_data(0x54,1,target_angle/255,target_angle%255,0x45)
+            sending_data(0x54,0,distance/255,distance%255,0x45)
+            angle_deg=angle_deg+target_angle
+            if angle_deg > 360:
+                angle_deg -= 360
+
+    t1 = time()
+    print("forward time is :", (t1 - t0))
+    
     cv2.imwrite(opt.img_save_path, np.hstack((draw_img, zeros, add_result)))
     # 单独保存掩码图
     
@@ -276,16 +325,27 @@ class YOLO11_Seg():
         logger.info(f"{self.weights_static.shape = }")
 
         # anchors, 只需要生成一次
-        self.s_anchor = np.stack([np.tile(np.linspace(0.5, 79.5, 80), reps=80), 
-                            np.repeat(np.arange(0.5, 80.5, 1), 80)], axis=0).transpose(1,0)
-        self.m_anchor = np.stack([np.tile(np.linspace(0.5, 39.5, 40), reps=40), 
-                            np.repeat(np.arange(0.5, 40.5, 1), 40)], axis=0).transpose(1,0)
-        self.l_anchor = np.stack([np.tile(np.linspace(0.5, 19.5, 20), reps=20), 
-                            np.repeat(np.arange(0.5, 20.5, 1), 20)], axis=0).transpose(1,0)
+        # self.s_anchor = np.stack([np.tile(np.linspace(0.5, 79.5, 80), reps=80), 
+        #                     np.repeat(np.arange(0.5, 80.5, 1), 80)], axis=0).transpose(1,0)
+        # self.m_anchor = np.stack([np.tile(np.linspace(0.5, 39.5, 40), reps=40), 
+        #                     np.repeat(np.arange(0.5, 40.5, 1), 40)], axis=0).transpose(1,0)
+        # self.l_anchor = np.stack([np.tile(np.linspace(0.5, 19.5, 20), reps=20), 
+        #                     np.repeat(np.arange(0.5, 20.5, 1), 20)], axis=0).transpose(1,0)
+
+        # 小目标检测层（s_anchor）：原尺寸 80x80 -> 新尺寸 96x72
+        self.s_anchor = np.stack([np.tile(np.linspace(0.5, 95.5, 96), reps=72),
+                          np.repeat(np.arange(0.5, 72.5, 1), 96)], axis=0).transpose(1, 0)
+        # 中目标检测层（m_anchor）：原尺寸 40x40 -> 新尺寸 48x36
+        self.m_anchor = np.stack([np.tile(np.linspace(0.5, 47.5, 48), reps=36),
+                          np.repeat(np.arange(0.5, 36.5, 1), 48)], axis=0).transpose(1, 0)
+        # 大目标检测层（l_anchor）：原尺寸 20x20 -> 新尺寸 24x18
+        self.l_anchor = np.stack([np.tile(np.linspace(0.5, 23.5, 24), reps=18),
+                          np.repeat(np.arange(0.5, 18.5, 1), 24)], axis=0).transpose(1, 0)
+
         logger.info(f"{self.s_anchor.shape = }, {self.m_anchor.shape = }, {self.l_anchor.shape = }")
 
         # 输入图像大小, 一些阈值, 提前计算好
-        self.input_image_size = 640
+        self.input_image_size = (576, 768)
         self.SCORE_THRESHOLD = opt.score_thres
         self.NMS_THRESHOLD = opt.nms_thres
         self.CONF_THRES_RAW = -np.log(1/self.SCORE_THRESHOLD - 1)
@@ -295,7 +355,7 @@ class YOLO11_Seg():
         self.input_H, self.input_W = self.quantize_model[0].inputs[0].properties.shape[2:4]
         logger.info(f"{self.input_H = }, {self.input_W = }")
 
-        self.Mask_H, self.Mask_W = 160, 160
+        self.Mask_H, self.Mask_W = 144, 192
         self.x_scale_corp = self.Mask_W / self.input_W
         self.y_scale_corp = self.Mask_H / self.input_H
         logger.info(f"{self.Mask_H = }   {self.Mask_W = }")
@@ -461,6 +521,8 @@ class YOLO11_Seg():
 
         # Mask Proto的反量化
         protos_float32 = protos.astype(np.float32)[0] * self.mask_scale
+        # print("protos.shape:", protos.shape)
+        # print("protos_float32.shape:", protos_float32.shape)
 
         # 大中小特征层阈值筛选结果拼接
         dbboxes = np.concatenate((s_dbboxes, m_dbboxes, l_dbboxes), axis=0)
@@ -504,6 +566,8 @@ class YOLO11_Seg():
                 # mask
                 mc = mces[id_indices][indic]
                 mask = (np.sum(mc[np.newaxis, np.newaxis, :]*protos_float32[y1_corp:y2_corp,x1_corp:x2_corp,:], axis=2) > 0.5).astype(np.uint8)
+                # print(f"mces.shape={mces.shape}, mc.shape={mc.shape}")
+                # print(f"protos_crop.shape={protos_float32[y1_corp:y2_corp,x1_corp:x2_corp,:].shape}")
                 # append
                 results.append((i, scores[id_indices][indic], x1, y1, x2, y2, mask))
 
@@ -511,7 +575,8 @@ class YOLO11_Seg():
 
         return results
 
-coco_names = ["background","person","knife","fork","cup","giraffe","plate","table","cake","fence","hat","terrain","tree","car"]
+coco_names1 = ["background","person","knife","fork","cup","giraffe","plate","table","cake","fence","hat","terrain","tree","car"]
+coco_names= ["background","terrain","tree","car-tou","car-wei"]
 
 rdk_colors = [
     (56, 56, 255), (151, 157, 255), (31, 112, 255), (29, 178, 255),(49, 210, 207), (10, 249, 72), (23, 204, 146), (134, 219, 61),
