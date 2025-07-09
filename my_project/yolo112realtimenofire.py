@@ -233,7 +233,6 @@ def main_map():
     # print(f"文本文件已保存至: {txt_save_path}")
         
 
-
 class YOLO11_Seg():
     def __init__(self, opt):
         # 加载BPU的bin模型, 打印相关参数

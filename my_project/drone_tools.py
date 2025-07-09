@@ -51,7 +51,7 @@ def wait_for_receive(serial_port:serial.Serial,size:int) -> bytes:
         time.sleep(0.01)
 
 def take_off():
-    command = bytearray([drone_command_param.HEADER,drone_command_type.TAKE_OFF,0x00,0x00,0x00,drone_command_param.TAIL])
+    command = bytearray([drone_command_param.HEADER,drone_command_type.TAKE_OFF,0x00,0x00,100,drone_command_param.TAIL])
     return command
 
 def move(serial_port:serial.Serial,direction:int,distance:int):
@@ -106,4 +106,11 @@ def drone_command(serial_port:serial.Serial,type:drone_command_type,arg1:int,arg
         return drone_result(False, f"Error: UnKown")
 
     return drone_result(True, "Command executed successfully")
+
+
+if __name__ == '__main__':
+    ser = serial.Serial("/dev/ttyS3", 115200, timeout=1)
+    drone_command(ser, drone_command_type.TAKE_OFF, 0, 0)
+    # drone_command(ser, drone_command_type.MOVE, 0, 50)
+    drone_command(ser, drone_command_type.LAND, 0, 0)
 

@@ -16,7 +16,7 @@
 
 # 注意: 此程序在RDK板端端运行
 # Attention: This program runs on RDK board.
-
+import serial
 import cv2
 import numpy as np
 from scipy.special import softmax
@@ -28,6 +28,9 @@ import argparse
 import logging
 import math
 from serial1 import sending_data
+from zoom1 import process
+from firstBSPrealtime import BPU_Detect
+
 # 日志模块配置
 # logging configs
 logging.basicConfig(
@@ -36,17 +39,20 @@ logging.basicConfig(
     datefmt='%H:%M:%S')
 logger = logging.getLogger("RDK_YOLO")
 
-def pixelate_mask(mask, target_size=100, quality=2.0):
+import cv2
+import numpy as np
+
+def pixelate_mask(mask, target_size=100, keep_aspect_ratio=True):
     """
-    对掩码进行低像素化处理并直接输出小尺寸图片
+    对掩码进行像素化处理，保持原始宽高比（不裁剪为正方形），缩小像素尺寸
     
     参数:
     mask: 原始掩码图 (numpy数组)
-    target_size: 目标尺寸的最小边长 (像素数)
-    quality: 质量因子，控制插值和滤波强度
+    target_size: 目标短边尺寸（控制缩放程度，短边会缩放到此值）
+    keep_aspect_ratio: 是否保持原始宽高比（固定为True，确保比例不变）
     
     返回:
-    低像素化后的小尺寸掩码图 (numpy数组)
+    像素化后的掩码图 (numpy数组，保持原始宽高比，短边为target_size)
     """
     # 确保输入是二维或三维数组
     if len(mask.shape) == 2:
@@ -58,48 +64,54 @@ def pixelate_mask(mask, target_size=100, quality=2.0):
     else:
         raise ValueError("输入掩码必须是二维或三维数组")
     
-    # 计算降采样比例
-    scale = min(target_size / h, target_size / w)
-    target_h, target_w = int(h * scale), int(w * scale)
+    # 强制保持宽高比（忽略传入的False，确保比例不变）
+    keep_aspect_ratio = True  # 固定为True，确保不拉伸图像
     
-    # 如果目标尺寸已大于原图，则不处理
-    if target_h >= h and target_w >= w:
-        return mask.astype(np.uint8)
+    if keep_aspect_ratio:
+        # 保持原始宽高比，将短边缩放到target_size（核心修改：不裁剪为正方形）
+        scale = target_size / min(h, w)
+        target_h, target_w = int(h * scale), int(w * scale)
+        
+        # 确保目标尺寸至少为1像素
+        target_h = max(1, target_h)
+        target_w = max(1, target_w)
+        
+        # 第一步：降采样到目标尺寸（生成像素化效果）
+        # 直接缩放到目标尺寸（短边=target_size，长边按比例缩放）
+        pixelated = cv2.resize(
+            mask, 
+            (target_w, target_h), 
+            interpolation=cv2.INTER_NEAREST  # 最近邻插值，保持硬边缘
+        )
+        
+        # 核心修改：移除裁剪和填充正方形的逻辑，直接保留按比例缩放的结果
+        result = pixelated
     
-    # 降采样（保持宽高比）
-    if is_gray:
-        downsampled = cv2.resize(mask, (target_w, target_h), 
-                                interpolation=cv2.INTER_AREA)
     else:
-        downsampled = cv2.resize(mask, (target_w, target_h), 
-                                interpolation=cv2.INTER_AREA)
+        # 即使传入False，仍按保持比例处理（避免拉伸，与需求一致）
+        scale = target_size / min(h, w)
+        target_h, target_w = int(h * scale), int(w * scale)
+        target_h = max(1, target_h)
+        target_w = max(1, target_w)
+        result = cv2.resize(
+            mask, 
+            (target_w, target_h), 
+            interpolation=cv2.INTER_NEAREST
+        )
     
-    # 计算高斯核大小（确保为正奇数）
-    kernel_size = max(1, int(3 * quality))
-    if kernel_size % 2 == 0:
-        kernel_size += 1
-    
-    # 应用抗锯齿滤波
-    if is_gray:
-        blurred = cv2.GaussianBlur(downsampled, (kernel_size, kernel_size), quality/2)
-    else:
-        blurred = cv2.GaussianBlur(downsampled, (kernel_size, kernel_size), quality/2)
-    
-    # 二值化处理（仅对单通道掩码）
-    if is_gray:
-        _, pixelated = cv2.threshold(blurred, 0.5, 255, cv2.THRESH_BINARY)
-        return pixelated.astype(np.uint8)
-    else:
-        return blurred.astype(np.uint8)
+    return result.astype(np.uint8)
 
-def binarize_image_to_array(image, target_color, tolerance=30):
+target_colors = [(31, 112, 255), (29, 178, 255),(199, 55, 255)]
+
+def binarize_image_to_array(image, target_colors, tolerance=30, expand_size=2):
     """
-    将图片二值化并转换为二维数组
+    将图片二值化并转换为二维数组，同时扩大目标颜色区域
     
     参数:
     image (str/numpy.ndarray): 图片路径或图片数组
-    target_color (tuple): 目标颜色，格式为(B,G,R)
+    target_colors (list): 目标颜色列表，每个颜色格式为(B,G,R)
     tolerance (int): 颜色匹配容忍度，值越大匹配范围越广
+    expand_size (int): 目标区域向外扩展的像素数
     
     返回:
     numpy.ndarray: 二值化后的二维数组，黑色为0，白色为1
@@ -118,19 +130,60 @@ def binarize_image_to_array(image, target_color, tolerance=30):
     # 黑色区域
     black_mask = cv2.inRange(img, (0, 0, 0), (50, 50, 50))
     
-    # 目标颜色区域
-    lower_bound = np.array([max(0, c - tolerance) for c in target_color])
-    upper_bound = np.array([min(255, c + tolerance) for c in target_color])
-    color_mask = cv2.inRange(img, lower_bound, upper_bound)
+    # 初始化颜色掩码
+    color_mask = np.zeros_like(black_mask)
     
-    # 合并掩码（黑色和目标颜色都变为黑色(0)）
+    # 为每种目标颜色创建掩码并合并
+    for color in target_colors:
+        lower_bound = np.array([max(0, c - tolerance) for c in color])
+        upper_bound = np.array([min(255, c + tolerance) for c in color])
+        color_mask = cv2.bitwise_or(color_mask, cv2.inRange(img, lower_bound, upper_bound))
+    
+    # 合并所有掩码（黑色和所有目标颜色都变为黑色(0)）
     combined_mask = cv2.bitwise_or(black_mask, color_mask)
+    
+    # 扩大黑色区域（目标颜色及其周边）
+    if expand_size > 0:
+        # 创建膨胀核（可以是矩形、椭圆等）
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (expand_size*2+1, expand_size*2+1))
+        # 应用膨胀操作
+        combined_mask = cv2.dilate(combined_mask, kernel, iterations=1)
     
     # 将合并后的掩码转换为0和1的二维数组
     # 黑色区域(0)保持为0，其他区域(255)变为1
-    binary_array = (combined_mask == 0).tolist()
+    binary_array = (combined_mask == 0).astype(np.uint8).tolist()
     
     return binary_array
+
+def visualize_binary_array(binary_array, output_path, scale=1):
+    """
+    将二值化后的二维数组保存为黑白图像
+    
+    参数:
+    binary_array (list): 二值化后的二维数组，0表示黑色，1表示白色
+    output_path (str): 图像保存路径，例如 "result.png"
+    scale (float): 图像缩放比例
+    
+    返回:
+    None
+    """
+    # 将二维数组转换为NumPy数组
+    binary_array = np.array(binary_array, dtype=np.uint8)
+    
+    # 创建黑白图像（0=黑色，255=白色）
+    binary_image = binary_array * 255
+    
+    # 调整图像尺寸
+    if scale != 1:
+        height, width = binary_image.shape
+        binary_image = cv2.resize(binary_image, (int(width*scale), int(height*scale)))
+    
+    # 保存图像
+    try:
+        cv2.imwrite(output_path, binary_image)
+        print(f"二值化图像已成功保存到: {output_path}")
+    except Exception as e:
+        print(f"保存图像时出错: {e}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -142,23 +195,48 @@ def main():
                                 RDK S100: Nash-e.
                                 RDK S100P: Nash-m.""") 
     # parser.add_argument('--test-img', type=str, default='../../../../resource/datasets/COCO2017/assets/bus.jpg', help='Path to Load Test Image.')
-    parser.add_argument('--test-img', type=str, default='/app/0fe66fb599bb9750e49442ffd486100.jpg', help='Path to Load Test Image.')
+    parser.add_argument('--test-img', type=str, default='/app/my_project/photo/fire_screenshot_09.07.2025.png', help='Path to Load Test Image.')
     parser.add_argument('--mask-save-path', type=str, default='/app/my_project/v8seg-photo/mask.jpg', help='Path to Save Mask Image.')
+    # parser.add_argument('--mask2-save-path', type=str, default='/app/my_project/v8seg-photo/mask2.jpg', help='Path to Save Mask Image.')
     parser.add_argument('--img-save-path', type=str, default='/app/my_project/v8seg-photo/result.jpg', help='Path to Load Test Image.')
     parser.add_argument('--classes-num', type=int, default=5, help='Classes Num to Detect.')
     parser.add_argument('--nms-thres', type=float, default=0.7, help='IoU threshold.')
-    parser.add_argument('--score-thres', type=float, default=0.25, help='confidence threshold.')
+    parser.add_argument('--score-thres', type=float, default=0.86, help='confidence threshold.')
     parser.add_argument('--reg', type=int, default=16, help='DFL reg layer.')
     parser.add_argument('--mc', type=int, default=32, help='Mask Coefficients')
     parser.add_argument('--is-open', type=bool, default=True, help='Ture: morphologyEx')
     parser.add_argument('--is-point', type=bool, default=True, help='Ture: Draw edge points')
     opt = parser.parse_args()
     logger.info(opt)
-    
+    Buildmap=0
+    fire_radius=0
+    fire_center=(0,0)
+    ser = serial.Serial('/dev/ttyS1', 115200, timeout=1) # 1s timeout
+    # if ser.readall():
+    #     print("Success to connect to the serial device.")
+    #     # aaaaaa=ser.readall()
+    #     ser.write("r")
+
+    #飞机飞行指令
+    # drone_command(ser, drone_command_type.TAKE_OFF, 0, 0)
+    coconame2 = ["fire","smoke"]
+    models1 = "/app/my_project/bin/converted_model2.bin"
+    infer = BPU_Detect(models1,coconame2,conf=0.5,iou=0.3,mode = True)
+
+
     # 实例化
     model = YOLO11_Seg(opt)
     # 读图
     img = cv2.imread(opt.test_img)
+
+    infer.detect(img)
+    for class_id, score, bbox in zip(infer.ids, infer.scores, infer.bboxes):
+        x11, y11, x22, y22 = bbox
+        fire_radius = math.sqrt((x11-x22)**2+(y11-y22)**2)*0.5
+        fire_center = ((x11+x22)//2,(y11+y22)//2)
+        infer.draw_detection(img, (x11, y11, x22, y22), score, class_id, infer.labelname)
+    print(fire_center,fire_radius,(fire_center[0]/5.77,fire_center[1]/5.77),fire_radius/5.77)
+
     # 准备输入数据
     input_tensor = model.preprocess_yuv420sp(img)
     # 推理
@@ -170,8 +248,9 @@ def main():
     # 绘制
     draw_img = img.copy()
     zeros = np.zeros((img.shape[0],img.shape[1],3), dtype=np.uint8)
+    #掩码处理部分
     for class_id, score, x1, y1, x2, y2, mask in results:
-        # 计算车的实施方向
+        # 计算车的实时方向
         if class_id == 3:
             tou = ((x1 + x2) // 2, (y1 + y2) // 2)
         if class_id == 4:
@@ -180,14 +259,15 @@ def main():
         try:
             dx = tou[0]-wei[0]
             dy = tou[1]-wei[1]
-
+            car_center=((tou[0]+wei[0])//2,(tou[1]+wei[1])//2)
             radius=abs(dy-dx)*0.75
+            print('radius:',radius)
 
             # 计算弧度角，注意：atan2 参数是 (y, x)
             angle_rad = math.atan2(dy, dx)
 
             # 转换为角度，并调整范围到 [0, 360)
-            angle_deg = 360-math.degrees(angle_rad)
+            angle_deg = 180-math.degrees(angle_rad)
             if angle_deg < 0:
                 angle_deg += 360
             if angle_deg > 360:
@@ -224,40 +304,87 @@ def main():
 
     # 可视化, 这里采用直接相加的方式，实际应用中对Mask一般不需要Resize这些操作
     add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
-    # 保存结果
-
+    
+    start_x, start_y = car_center[0]+0.03*abs(car_center[0]-384), car_center[1]-0.03*(car_center[1]-288)
+    # start_x, start_y = 120,120
+    #透视变换
+    zeros=process(zeros)
+    
     t0 = time()
+    # 低像素化
     map2=pixelate_mask(zeros,100)
     cv2.imwrite(opt.mask_save_path, map2)
+    # 二值化
+    map2=binarize_image_to_array(map2,[(31, 112, 255), (29, 178, 255),(199, 55, 255)], tolerance=30, expand_size=1)
+    # print(map2)
+    visualize_binary_array(map2,"/app/my_project/v8seg-photo/mask2.jpg", scale=1)
 
-    map2=binarize_image_to_array(map2,(199, 55, 255))
-    
-    result = search_path(map2,(3, 3),(97, 72),2,2)
+    print('car_center',int(start_x/5.77),int(start_y/5.77))
+    result = search_path(map2,(int(start_x/5.77),int(start_y/5.77)),(int(fire_center[0]/5.77), int(fire_center[1]/5.77)),12,9)
+
     # print(result.angle,result.distance)
+    end_y=0
+    end_x=0
+    
+    cv2.circle(zeros, (int(start_x), int(start_y)), 15, (0, 255, 0), -1)
+    all_data=[]
+    print(start_x,start_y)
+
     for r in result:
+        if r.angle==360:
+            r.angle=0
         print(r.angle,r.distance)
-        #如果车的角度比要前进的角度大，则先负转弯，再前进
+
         target_angle=abs(int(angle_deg-r.angle))
-        distance=int(r.distance)
+        if target_angle==360:
+            target_angle=0
+        # 比例！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！    
+        distance=int(r.distance*23.5)#16.5,26.15,
+        #如果车的角度比要前进的角度大，则先负转弯，再前进
         if angle_deg > r.angle:
-            sending_data(0x54,2,target_angle/255,target_angle%255,0x45)
-            sending_data(0x54,0,distance/255,distance%255,0x45)
+            # sending_data(0x54,2,target_angle/255,target_angle%255,0x45)
+            # sending_data(0x54,0,distance/255,distance%255,0x45)
+            packet1 = bytes([0x54, 1, int(target_angle/255.0) % 255, target_angle%255, 0x45])
+            packet2 = bytes([0x54, 0, int(distance/255) % 255, distance%255, 0x45])
+            all_data.append(packet1)
+            all_data.append(packet2)
             angle_deg=angle_deg-target_angle
             if angle_deg < 0:
                 angle_deg += 360
         #如果车的角度比要前进的角度小，则先正转弯，再前进    
         else :
-            sending_data(0x54,1,target_angle/255,target_angle%255,0x45)
-            sending_data(0x54,0,distance/255,distance%255,0x45)
+            # sending_data(0x54,1,target_angle/255,target_angle%255,0x45)
+            # sending_data(0x54,0,distance/255,distance%255,0x45)
+            packet1 = bytes([0x54, 2, int(target_angle/255.0) % 255, target_angle%255, 0x45])
+            packet2 = bytes([0x54, 0, int(distance/255) % 255, distance%255, 0x45])
+            all_data.append(packet1) 
+            all_data.append(packet2)
             angle_deg=angle_deg+target_angle
-            if angle_deg > 360:
+            if angle_deg >= 360:
                 angle_deg -= 360
 
+        angle_rad = math.radians(angle_deg)
+        # 比例！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！    
+        end_x = start_x + distance * math.cos(angle_rad)/23.5*5.77#前是实际与低像素图比例，后是图片像素比
+        end_y = start_y - distance * math.sin(angle_rad)/23.5*5.77
+        #画路径
+        cv2.line(zeros, (int(start_x), int(start_y)), (int(end_x), int(end_y)), (0, 255, 0), 2)
+        start_x, start_y = end_x, end_y
+    packet3 = bytes([0x54, 2, 0x00, 0x64, 0x45])
+    all_data.append(packet3)
+    ser.write(b''.join(all_data))
+
+    print(all_data)
+    #画终点
+    cv2.circle(zeros, (int(start_x), int(start_y)), 15, (255, 0, 0), -1)
+    #画火焰点
+    cv2.circle(zeros, (int(fire_center[0]), int(fire_center[1])), 15, (0, 0, 255), -1)
     t1 = time()
     print("forward time is :", (t1 - t0))
     
     cv2.imwrite(opt.img_save_path, np.hstack((draw_img, zeros, add_result)))
     # 单独保存掩码图
+    # cv2.imwrite(opt.mask_save_path, zeros)
     
     logger.info("\033[1;32m" + f"saved combined result in path: \"./{opt.img_save_path}\"" + "\033[0m")
     logger.info("\033[1;32m" + f"saved mask result in path: \"./{opt.mask_save_path}\"" + "\033[0m")
