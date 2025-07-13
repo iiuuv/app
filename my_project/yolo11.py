@@ -31,6 +31,33 @@ from serial1 import sending_data
 from zoom1 import process
 from firstBSPrealtime import BPU_Detect
 
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import BoolMultiArray
+from std_msgs.msg import MultiArrayDimension
+
+class BoolArrayPublisher(Node):
+    def __init__(self):
+        super().__init__('bool_array_publisher')
+        self.publisher_ = self.create_publisher(BoolMultiArray, '/bool_array', 10)
+
+    def publish_array(self, array_2d):
+        msg = BoolMultiArray()
+        height, width = array_2d.shape
+        msg.data = array_2d.flatten().tolist()
+
+        msg.layout.dim.append(MultiArrayDimension())
+        msg.layout.dim[0].label = "height"
+        msg.layout.dim[0].size = height
+        msg.layout.dim[0].stride = height * width
+
+        msg.layout.dim.append(MultiArrayDimension())
+        msg.layout.dim[1].label = "width"
+        msg.layout.dim[1].size = width
+        msg.layout.dim[1].stride = width
+
+        self.publisher_.publish(msg)
+        self.get_logger().info('已发送布尔数组')
 # 日志模块配置
 # logging configs
 logging.basicConfig(
@@ -39,8 +66,6 @@ logging.basicConfig(
     datefmt='%H:%M:%S')
 logger = logging.getLogger("RDK_YOLO")
 
-import cv2
-import numpy as np
 
 def pixelate_mask(mask, target_size=100, keep_aspect_ratio=True):
     """

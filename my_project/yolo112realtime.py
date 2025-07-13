@@ -225,7 +225,7 @@ def main_map():
     # parser.add_argument('--img-save-path', type=str, default='/app/my_project/v8seg-photo/result.jpg', help='Path to Load Test Image.')
     parser.add_argument('--classes-num', type=int, default=5, help='Classes Num to Detect.')
     parser.add_argument('--nms-thres', type=float, default=0.7, help='IoU threshold.')
-    parser.add_argument('--score-thres', type=float, default=0.8, help='confidence threshold.')
+    parser.add_argument('--score-thres', type=float, default=0.85, help='confidence threshold.')
     parser.add_argument('--reg', type=int, default=16, help='DFL reg layer.')
     parser.add_argument('--mc', type=int, default=32, help='Mask Coefficients')
     parser.add_argument('--is-open', type=bool, default=True, help='Ture: morphologyEx')
@@ -239,7 +239,7 @@ def main_map():
 
     coconame1 = ["fire","smoke"]
     models1 = "/app/my_project/bin/converted_model2.bin"
-    infer = BPU_Detect(models1,coconame1,conf=0.6,iou=0.3,mode = True)
+    infer = BPU_Detect(models1,coconame1,conf=0.55,iou=0.3,mode = True)
 
     if len(sys.argv) > 1:
         video_device = sys.argv[1]
@@ -405,7 +405,7 @@ def main_map():
             start_x, start_y = car_center[0], car_center[1]
             
             #画起点
-            cv2.circle(zeros, (int(start_x), int(start_y)), 5, (0, 255, 0), -1)
+            # cv2.circle(zeros, (int(start_x), int(start_y)), 5, (0, 255, 0), -1)
             t0 = time()
             Zoom=des_dim[0]/133
             print(Zoom)
@@ -418,7 +418,7 @@ def main_map():
             # result = search_path(map2,(int(car_center[0]/Zoom),int(car_center[1]/Zoom)),(int(fire_center[0]/Zoom),int(fire_center[1]/Zoom)),int(car_radius/Zoom),int(fire_radius/Zoom))
             result = search_path(map2,(int(car_center[0]/Zoom),int(car_center[1]/Zoom)),(10,120),int(car_radius/Zoom),int(fire_radius/Zoom))
 
-            cv2.circle(zeros, (int(start_x), int(start_y)), 15, (0, 255, 0), -1)
+            # cv2.circle(zeros, (int(start_x), int(start_y)), 15, (0, 255, 0), -1)
             all_data=[]
             for r in result:
                 print(r.angle,r.distance)
@@ -461,7 +461,7 @@ def main_map():
 
             print(all_data)
             # 画终点
-            cv2.circle(zeros, (int(start_x), int(start_y)), 15, (255, 0, 0), -1)
+            # cv2.circle(zeros, (int(start_x), int(start_y)), 15, (255, 0, 0), -1)
             # 画火焰点
 
             # cv2.circle(zeros, fire_center, 15, (0, 0, 255), -1)
