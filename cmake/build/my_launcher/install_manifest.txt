@@ -1,0 +1,15 @@
+/app/install/my_launcher/share/ament_index/resource_index/package_run_dependencies/my_launcher
+/app/install/my_launcher/share/ament_index/resource_index/parent_prefix_path/my_launcher
+/app/install/my_launcher/share/my_launcher/environment/ament_prefix_path.sh
+/app/install/my_launcher/share/my_launcher/environment/ament_prefix_path.dsv
+/app/install/my_launcher/share/my_launcher/environment/path.sh
+/app/install/my_launcher/share/my_launcher/environment/path.dsv
+/app/install/my_launcher/share/my_launcher/local_setup.bash
+/app/install/my_launcher/share/my_launcher/local_setup.sh
+/app/install/my_launcher/share/my_launcher/local_setup.zsh
+/app/install/my_launcher/share/my_launcher/local_setup.dsv
+/app/install/my_launcher/share/my_launcher/package.dsv
+/app/install/my_launcher/share/ament_index/resource_index/packages/my_launcher
+/app/install/my_launcher/share/my_launcher/cmake/my_launcherConfig.cmake
+/app/install/my_launcher/share/my_launcher/cmake/my_launcherConfig-version.cmake
+/app/install/my_launcher/share/my_launcher/package.xml

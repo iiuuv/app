@@ -1,0 +1,9 @@
+/app/build/my_launcher/CMakeFiles/uninstall.dir
+/app/build/my_launcher/CMakeFiles/my_launcher_uninstall.dir
+/app/build/my_launcher/CMakeFiles/test.dir
+/app/build/my_launcher/CMakeFiles/edit_cache.dir
+/app/build/my_launcher/CMakeFiles/rebuild_cache.dir
+/app/build/my_launcher/CMakeFiles/list_install_components.dir
+/app/build/my_launcher/CMakeFiles/install.dir
+/app/build/my_launcher/CMakeFiles/install/local.dir
+/app/build/my_launcher/CMakeFiles/install/strip.dir

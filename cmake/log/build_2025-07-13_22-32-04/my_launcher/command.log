@@ -1,0 +1,6 @@
+Invoking command in '/app/build/my_launcher': CMAKE_PREFIX_PATH=/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /app/my_launcher -DCMAKE_INSTALL_PREFIX=/app/install/my_launcher
+Invoked command in '/app/build/my_launcher' returned '0': CMAKE_PREFIX_PATH=/opt/tros/humble:/opt/ros/humble /usr/bin/cmake /app/my_launcher -DCMAKE_INSTALL_PREFIX=/app/install/my_launcher
+Invoking command in '/app/build/my_launcher': CMAKE_PREFIX_PATH=/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /app/build/my_launcher -- -j8 -l8
+Invoked command in '/app/build/my_launcher' returned '0': CMAKE_PREFIX_PATH=/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --build /app/build/my_launcher -- -j8 -l8
+Invoking command in '/app/build/my_launcher': CMAKE_PREFIX_PATH=/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /app/build/my_launcher
+Invoked command in '/app/build/my_launcher' returned '0': CMAKE_PREFIX_PATH=/opt/tros/humble:/opt/ros/humble /usr/bin/cmake --install /app/build/my_launcher
