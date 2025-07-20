@@ -1,10 +1,11 @@
 import cv2
 import numpy as np
-
+# (236, 24, 0), (255, 56, 132)
 block_color= (0x38, 0x38, 0XFF)
-additional_color1=(31, 112, 255)
-additional_color2=(29, 178, 255)
-
+# additional_color1=(31, 112, 255)
+# additional_color2=(29, 178, 255)
+additional_color1=(236, 24, 0)
+additional_color2=(255, 56, 132)
 def process(image):
     # 检查输入图像
     if image is None:
@@ -22,9 +23,9 @@ def process(image):
     
     # 定义需要处理的颜色列表 (RGB格式) 和对应的缩放因子
     color_processing_params = [
-        (block_color, 0.90),          # 原始颜色使用 0.90 缩放因子
-        (additional_color1, 0.95),    # 新增颜色1使用 0.91 缩放因子
-        (additional_color2, 0.95)     # 新增颜色2使用 0.91 缩放因子
+        (block_color, 0.88),          # 原始颜色使用 0.90 缩放因子
+        (additional_color1, 0.90),    # 新增颜色1使用 0.95 缩放因子
+        (additional_color2, 0.90)     # 新增颜色2使用 0.95 缩放因子
     ]
     
     # 对每种颜色执行处理

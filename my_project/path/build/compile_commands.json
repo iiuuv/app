@@ -1,0 +1,12 @@
+[
+{
+  "directory": "/app/my_project/path/build",
+  "command": "/usr/bin/c++   -std=gnu++23 -o CMakeFiles/pathCXX2.dir/main.cpp.o -c /app/my_project/path/main.cpp",
+  "file": "/app/my_project/path/main.cpp"
+},
+{
+  "directory": "/app/my_project/path/build",
+  "command": "/usr/bin/c++   -std=gnu++23 -o CMakeFiles/pathCXX2.dir/path.cpp.o -c /app/my_project/path/path.cpp",
+  "file": "/app/my_project/path/path.cpp"
+}
+]

@@ -23,12 +23,22 @@ from scipy.special import softmax
 # from scipy.special import expit as sigmoid
 from hobot_dnn import pyeasy_dnn as dnn  # BSP Python API
 import sys
-from time import time
+from time import sleep, time
+import struct
 import argparse
 import logging
 import ctypes
 import os
 from firstBSPrealtime import BPU_Detect
+import socket
+
+HOST = '192.168.1.254'  # 主机的IP地址
+PORT = 8080            # 主机的端口号
+
+# 创建Socket连接
+client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+client_socket.connect((HOST, PORT))
+
 
 # 日志模块配置
 # logging configs
@@ -195,8 +205,18 @@ def main_map():
                 cv2.polylines(draw_img, points, isClosed=True, color=rdk_colors[(class_id-1)%20], thickness=4)
 
         add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
-        cv2.imshow("Mask",zeros)
-        cv2.imshow("add_result",add_result)
+        # cv2.imshow("Mask",zeros)
+        # cv2.imshow("add_result",add_result)
+
+        #发送给主机图像
+        message = "1"
+        client_socket.sendall(message.encode('utf-8'))
+        # 将图像数组转为字节流
+        sleep(0.01)
+        data1 = add_result.tobytes()
+
+        # 发送数据长度和图像数据
+        client_socket.sendall(struct.pack("L", len(data1)) + data1)
         
         key = cv2.waitKey(1) & 0xFF
         if key == 27 or key == ord('q'):  # ESC键或q键

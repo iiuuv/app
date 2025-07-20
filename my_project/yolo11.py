@@ -30,34 +30,44 @@ import math
 from serial1 import sending_data
 from zoom1 import process
 from firstBSPrealtime import BPU_Detect
+import mmap
+import os
+import subprocess
+import ctypes
+import struct
+import json
+# import time
 
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import BoolMultiArray
-from std_msgs.msg import MultiArrayDimension
+EFD_SEMAPHORE = 1
+EFD_NONBLOCK = 0o4000
+EFD_CLOEXEC = 0o2000000
+# import rclpy
+# from rclpy.node import Node
+# from std_msgs.msg import BoolMultiArray
+# from std_msgs.msg import MultiArrayDimension
 
-class BoolArrayPublisher(Node):
-    def __init__(self):
-        super().__init__('bool_array_publisher')
-        self.publisher_ = self.create_publisher(BoolMultiArray, '/bool_array', 10)
+# class BoolArrayPublisher(Node):
+#     def __init__(self):
+#         super().__init__('bool_array_publisher')
+#         self.publisher_ = self.create_publisher(BoolMultiArray, '/bool_array', 10)
 
-    def publish_array(self, array_2d):
-        msg = BoolMultiArray()
-        height, width = array_2d.shape
-        msg.data = array_2d.flatten().tolist()
+#     def publish_array(self, array_2d):
+#         msg = BoolMultiArray()
+#         height, width = array_2d.shape
+#         msg.data = array_2d.flatten().tolist()
 
-        msg.layout.dim.append(MultiArrayDimension())
-        msg.layout.dim[0].label = "height"
-        msg.layout.dim[0].size = height
-        msg.layout.dim[0].stride = height * width
+#         msg.layout.dim.append(MultiArrayDimension())
+#         msg.layout.dim[0].label = "height"
+#         msg.layout.dim[0].size = height
+#         msg.layout.dim[0].stride = height * width
 
-        msg.layout.dim.append(MultiArrayDimension())
-        msg.layout.dim[1].label = "width"
-        msg.layout.dim[1].size = width
-        msg.layout.dim[1].stride = width
+#         msg.layout.dim.append(MultiArrayDimension())
+#         msg.layout.dim[1].label = "width"
+#         msg.layout.dim[1].size = width
+#         msg.layout.dim[1].stride = width
 
-        self.publisher_.publish(msg)
-        self.get_logger().info('已发送布尔数组')
+#         self.publisher_.publish(msg)
+#         self.get_logger().info('已发送布尔数组')
 # 日志模块配置
 # logging configs
 logging.basicConfig(
@@ -126,21 +136,27 @@ def pixelate_mask(mask, target_size=100, keep_aspect_ratio=True):
     
     return result.astype(np.uint8)
 
-target_colors = [(31, 112, 255), (29, 178, 255),(199, 55, 255)]
+target_colors = [(236, 24, 0), (29, 178, 255),(199, 55, 255)]
 
-def binarize_image_to_array(image, target_colors, tolerance=30, expand_size=2):
+def binarize_image_to_array(image, target_colors, specific_colors, tolerance=30, black_expand_size=1, color_expand_size=0):
     """
-    将图片二值化并转换为二维数组，同时扩大目标颜色区域
+    将图片二值化并转换为二维数组，分别扩大黑色区域和两种特定颜色区域
     
     参数:
     image (str/numpy.ndarray): 图片路径或图片数组
     target_colors (list): 目标颜色列表，每个颜色格式为(B,G,R)
+    specific_colors (list): 需要额外扩大的两种特定颜色，格式为[(B1,G1,R1), (B2,G2,R2)]
     tolerance (int): 颜色匹配容忍度，值越大匹配范围越广
-    expand_size (int): 目标区域向外扩展的像素数
+    black_expand_size (int): 黑色区域向外扩展的像素数
+    color_expand_size (int): 特定颜色区域向外扩展的像素数
     
     返回:
-    numpy.ndarray: 二值化后的二维数组，黑色为0，白色为1
+    numpy.ndarray: 二值化后的二维数组，黑色区域为0，特定颜色区域及其扩展为1，其他区域为0
     """
+    # 确保有两种特定颜色
+    if len(specific_colors) != 2:
+        raise ValueError("specific_colors参数必须包含两种颜色")
+    
     # 判断输入是路径还是数组
     if isinstance(image, str):
         # 如果是路径，则读取图片
@@ -151,34 +167,119 @@ def binarize_image_to_array(image, target_colors, tolerance=30, expand_size=2):
         # 如果是数组，直接使用
         img = image
     
-    # 创建二值化掩码
-    # 黑色区域
+    # 创建黑色区域掩码
     black_mask = cv2.inRange(img, (0, 0, 0), (50, 50, 50))
     
-    # 初始化颜色掩码
-    color_mask = np.zeros_like(black_mask)
+    # 初始化目标颜色掩码（这些颜色最终会被转换为黑色）
+    target_mask = np.zeros_like(black_mask)
     
     # 为每种目标颜色创建掩码并合并
     for color in target_colors:
         lower_bound = np.array([max(0, c - tolerance) for c in color])
         upper_bound = np.array([min(255, c + tolerance) for c in color])
-        color_mask = cv2.bitwise_or(color_mask, cv2.inRange(img, lower_bound, upper_bound))
+        target_mask = cv2.bitwise_or(target_mask, cv2.inRange(img, lower_bound, upper_bound))
     
-    # 合并所有掩码（黑色和所有目标颜色都变为黑色(0)）
-    combined_mask = cv2.bitwise_or(black_mask, color_mask)
+    # 分离两种特定颜色的掩码
+    color1, color2 = specific_colors
     
-    # 扩大黑色区域（目标颜色及其周边）
-    if expand_size > 0:
-        # 创建膨胀核（可以是矩形、椭圆等）
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (expand_size*2+1, expand_size*2+1))
-        # 应用膨胀操作
-        combined_mask = cv2.dilate(combined_mask, kernel, iterations=1)
+    # 创建第一种特定颜色的掩码
+    lower1 = np.array([max(0, c - tolerance) for c in color1])
+    upper1 = np.array([min(255, c + tolerance) for c in color1])
+    specific_mask1 = cv2.inRange(img, lower1, upper1)
     
-    # 将合并后的掩码转换为0和1的二维数组
-    # 黑色区域(0)保持为0，其他区域(255)变为1
-    binary_array = (combined_mask == 0).astype(np.uint8).tolist()
+    # 创建第二种特定颜色的掩码
+    lower2 = np.array([max(0, c - tolerance) for c in color2])
+    upper2 = np.array([min(255, c + tolerance) for c in color2])
+    specific_mask2 = cv2.inRange(img, lower2, upper2)
+    
+    # 分别扩大黑色区域、第一种特定颜色区域和第二种特定颜色区域
+    if black_expand_size > 0:
+        kernel_black = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (black_expand_size*2+1, black_expand_size*2+1))
+        expanded_black = cv2.dilate(black_mask, kernel_black, iterations=1)
+    else:
+        expanded_black = black_mask.copy()
+    
+    if color_expand_size > 0:
+        kernel_color = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (color_expand_size*2+1, color_expand_size*2+1))
+        expanded_color1 = cv2.dilate(specific_mask1, kernel_color, iterations=1)
+        expanded_color2 = cv2.dilate(specific_mask2, kernel_color, iterations=1)
+    else:
+        expanded_color1 = specific_mask1.copy()
+        expanded_color2 = specific_mask2.copy()
+    
+    # 合并所有需要变为黑色的区域（黑色区域 + 目标颜色区域）
+    black_regions = cv2.bitwise_or(expanded_black, target_mask)
+    
+    # 合并两种特定颜色的扩展区域
+    expanded_specific_regions = cv2.bitwise_or(expanded_color1, expanded_color2)
+    
+    # 创建最终掩码：
+    # 1. 先将特定颜色的扩展区域设为白色(255)
+    # 2. 再将黑色区域设为黑色(0)，但只覆盖那些不在特定颜色扩展区域内的部分
+    final_mask = np.zeros_like(black_regions)
+    final_mask[expanded_specific_regions > 0] = 255  # 特定颜色扩展区域设为白色
+    
+    # 只在特定颜色扩展区域之外的地方应用黑色区域
+    non_specific_mask = np.ones_like(black_regions, dtype=bool)
+    non_specific_mask[expanded_specific_regions > 0] = False
+    final_mask[np.logical_and(black_regions > 0, non_specific_mask)] = 0
+    
+    # 将掩码转换为0和1的二维数组
+    binary_array = (final_mask > 0).astype(np.uint8).tolist()
     
     return binary_array
+
+# def binarize_image_to_array(image, target_colors, tolerance=30, expand_size=2):
+#     """
+#     将图片二值化并转换为二维数组，同时扩大目标颜色区域
+    
+#     参数:
+#     image (str/numpy.ndarray): 图片路径或图片数组
+#     target_colors (list): 目标颜色列表，每个颜色格式为(B,G,R)
+#     tolerance (int): 颜色匹配容忍度，值越大匹配范围越广
+#     expand_size (int): 目标区域向外扩展的像素数
+    
+#     返回:
+#     numpy.ndarray: 二值化后的二维数组，黑色为0，白色为1
+#     """
+#     # 判断输入是路径还是数组
+#     if isinstance(image, str):
+#         # 如果是路径，则读取图片
+#         img = cv2.imread(image)
+#         if img is None:
+#             raise ValueError(f"无法读取图片: {image}")
+#     else:
+#         # 如果是数组，直接使用
+#         img = image
+    
+#     # 创建二值化掩码
+#     # 黑色区域
+#     black_mask = cv2.inRange(img, (0, 0, 0), (50, 50, 50))
+    
+#     # 初始化颜色掩码
+#     color_mask = np.zeros_like(black_mask)
+    
+#     # 为每种目标颜色创建掩码并合并
+#     for color in target_colors:
+#         lower_bound = np.array([max(0, c - tolerance) for c in color])
+#         upper_bound = np.array([min(255, c + tolerance) for c in color])
+#         color_mask = cv2.bitwise_or(color_mask, cv2.inRange(img, lower_bound, upper_bound))
+    
+#     # 合并所有掩码（黑色和所有目标颜色都变为黑色(0)）
+#     combined_mask = cv2.bitwise_or(black_mask, color_mask)
+    
+#     # 扩大黑色区域（目标颜色及其周边）
+#     if expand_size > 0:
+#         # 创建膨胀核（可以是矩形、椭圆等）
+#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (expand_size*2+1, expand_size*2+1))
+#         # 应用膨胀操作
+#         combined_mask = cv2.dilate(combined_mask, kernel, iterations=1)
+    
+#     # 将合并后的掩码转换为0和1的二维数组
+#     # 黑色区域(0)保持为0，其他区域(255)变为1
+#     binary_array = (combined_mask == 0).astype(np.uint8).tolist()
+    
+#     return binary_array
 
 def visualize_binary_array(binary_array, output_path, scale=1):
     """
@@ -210,7 +311,56 @@ def visualize_binary_array(binary_array, output_path, scale=1):
     except Exception as e:
         print(f"保存图像时出错: {e}")
 
+def eventfd(initval=0, flags=0):
+    libc = ctypes.CDLL("libc.so.6")
+    fd = libc.eventfd(initval, flags)
+    if fd < 0:
+        raise OSError("eventfd failed")
+    return fd
+
+# 创建共享内存并映射
+def create_shm(name, size):
+    shm_fd = os.open(name, os.O_CREAT | os.O_TRUNC | os.O_RDWR, 0o666)
+    os.ftruncate(shm_fd, size)
+    return mmap.mmap(shm_fd, size), shm_fd
+
+def create_shared_memory(data, size=1024):
+    # 创建临时文件用于共享内存
+    temp_file = '/tmp/shared_memory'
+    with open(temp_file, 'wb') as f:
+        # 调整文件大小
+        f.write(b'\0' * size)
+        # 写入数据
+        f.seek(0)
+        f.write(data.encode())
+
+    return temp_file
+
 def main():
+    # 初始化共享内存
+    SHM_MAP = "/dev/shm/shm_map"
+    SHM_DATA = "/dev/shm/shm_json"
+    SHM_RESULT = "/dev/shm/shm_result"
+
+    # 各段大小
+    SHM_MAP_SIZE = 133 * 100  # 地图数据
+    SHM_DATA_SIZE = 200     # JSON 字符串最大长度
+    SHM_RESULT_SIZE = 2048    # 示例：返回 4 个整数
+    CPP_PROGRAM = "/app/my_project/path/build/pathCXX2"  # C++ 可执行文件路径
+
+    shm_map, fd_map = create_shm(SHM_MAP, SHM_MAP_SIZE)
+    shm_data, fd_data = create_shm(SHM_DATA, SHM_DATA_SIZE)
+    shm_result, fd_result = create_shm(SHM_RESULT, SHM_RESULT_SIZE)
+
+    # 启动 C++ 子任务
+    efd = eventfd(0,0)
+    print(f"启动 C++ 子进程，eventfd = {efd}")
+    # cpp_process = subprocess.Popen([CPP_PROGRAM, str(efd)], pass_fds=(efd,))
+
+    rangle=0
+    rdistance=0
+    zoomm=5.77#576/200
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--model-path', type=str, default='/app/my_project/bin/converted_model_modified5.bin', 
                         help="""Path to BPU Quantized *.bin Model.
@@ -220,7 +370,7 @@ def main():
                                 RDK S100: Nash-e.
                                 RDK S100P: Nash-m.""") 
     # parser.add_argument('--test-img', type=str, default='../../../../resource/datasets/COCO2017/assets/bus.jpg', help='Path to Load Test Image.')
-    parser.add_argument('--test-img', type=str, default='/app/my_project/photo/fire_screenshot_09.07.2025.png', help='Path to Load Test Image.')
+    parser.add_argument('--test-img', type=str, default='/app/my_project/photo/fire_screenshot_19.07.2025.png', help='Path to Load Test Image.')
     parser.add_argument('--mask-save-path', type=str, default='/app/my_project/v8seg-photo/mask.jpg', help='Path to Save Mask Image.')
     # parser.add_argument('--mask2-save-path', type=str, default='/app/my_project/v8seg-photo/mask2.jpg', help='Path to Save Mask Image.')
     parser.add_argument('--img-save-path', type=str, default='/app/my_project/v8seg-photo/result.jpg', help='Path to Load Test Image.')
@@ -260,7 +410,7 @@ def main():
         fire_radius = math.sqrt((x11-x22)**2+(y11-y22)**2)*0.5
         fire_center = ((x11+x22)//2,(y11+y22)//2)
         infer.draw_detection(img, (x11, y11, x22, y22), score, class_id, infer.labelname)
-    print(fire_center,fire_radius,(fire_center[0]/5.77,fire_center[1]/5.77),fire_radius/5.77)
+    print(fire_center,fire_radius,(fire_center[0]/zoomm,fire_center[1]/zoomm),fire_radius/zoomm)
 
     # 准备输入数据
     input_tensor = model.preprocess_yuv420sp(img)
@@ -329,44 +479,103 @@ def main():
 
     # 可视化, 这里采用直接相加的方式，实际应用中对Mask一般不需要Resize这些操作
     add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
-    
-    start_x, start_y = car_center[0]+0.03*abs(car_center[0]-384), car_center[1]-0.03*(car_center[1]-288)
+    # 缩放起始点
+    if car_center[0]<384:
+        start_x= car_center[0]+0.05*abs(car_center[0]-384)
+    else:
+        start_x= car_center[0]-0.05*abs(car_center[0]-384)
+    if car_center[1]<288:
+        start_x= car_center[1]+0.05*abs(car_center[1]-384)
+    else:
+        start_x= car_center[1]-0.05*abs(car_center[1]-384)
+    # start_x, start_y = car_center[0]+0.05*abs(car_center[0]-384), car_center[1]-0.05*(car_center[1]-288)
     # start_x, start_y = 120,120
     #透视变换
     zeros=process(zeros)
     
     t0 = time()
     # 低像素化
+    # map2=pixelate_mask(zeros,100)
     map2=pixelate_mask(zeros,100)
     cv2.imwrite(opt.mask_save_path, map2)
     # 二值化
-    map2=binarize_image_to_array(map2,[(31, 112, 255), (29, 178, 255),(199, 55, 255)], tolerance=30, expand_size=1)
+    map2=binarize_image_to_array(map2,[(236, 24, 0), (255, 56, 132),(199, 55, 255)], [(56, 56, 255), (151, 157, 255)],tolerance=30)
+    
     # print(map2)
     visualize_binary_array(map2,"/app/my_project/v8seg-photo/mask2.jpg", scale=1)
 
-    print('car_center',int(start_x/5.77),int(start_y/5.77))
-    result = search_path(map2,(int(start_x/5.77),int(start_y/5.77)),(int(fire_center[0]/5.77), int(fire_center[1]/5.77)),12,9)
+    # Step 1: 转换为 numpy 数组，并指定数据类型为 uint8
+    # map3 = [1, 5, 9]
+    map_array = np.array(map2, dtype=np.uint8)
+
+    # 坐标数据
+    coords = np.array([int(start_x/zoomm),int(start_y/zoomm), int(fire_center[0]/zoomm), int(fire_center[1]/zoomm),12,9], dtype=np.int32)
+    print('coords:',coords)
+
+    data ={
+        "width": 133,
+        "height": 100,
+        "start_point": {
+            "x": int(start_x/zoomm),
+            "y": int(start_y/zoomm)
+        },
+        "end_point": {
+            "x": int(fire_center[0]/zoomm),
+            "y": int(fire_center[1]/zoomm)
+        },
+        "car_radius": 7,
+        "fire_radius": 8,
+    }
+    json_str = json.dumps(data).encode('utf-8')
+
+    # Step 2: 写入共享内存
+    shm_map.seek(0)
+    shm_map.write(map_array.tobytes())
+    shm_data.seek(0)
+    shm_data.write(json_str)
+
+    # 通知 C++ 开始处理
+    cpp_process = subprocess.Popen([CPP_PROGRAM])
+    cpp_process.wait()
+    os.write(efd, struct.pack('Q', 1))  # 发送 64-bit 整数 1
+    
+    #读取验证
+    shm_data.seek(0)
+    read_bytes = shm_data.read(SHM_DATA_SIZE)
+    print(read_bytes)
+    shm_result.seek(0)
+    read_paths = shm_result.read(SHM_RESULT_SIZE)
+    print("读取的 JSON 数据:", read_paths.decode('utf-8'))
+
+    data_list = json.loads(read_paths.strip(b'\x00'))
+    
+    all_data=[]
+    print(data_list)
+
+    print('car_center',int(start_x/zoomm),int(start_y/zoomm))
+    # result = search_path(map2,(int(start_x/zoomm),int(start_y/zoomm)),(int(fire_center[0]/zoomm), int(fire_center[1]/zoomm)),12,9)
 
     # print(result.angle,result.distance)
     end_y=0
     end_x=0
     
     cv2.circle(zeros, (int(start_x), int(start_y)), 15, (0, 255, 0), -1)
-    all_data=[]
     print(start_x,start_y)
 
-    for r in result:
-        if r.angle==360:
-            r.angle=0
-        print(r.angle,r.distance)
+    for json_obj in data_list:
+        rdistance=abs(json_obj["Distance"])
+        rangle=360-abs(json_obj["Direction"])
+        if rangle==360:
+            rangle=0
+        print(int(rangle),int(rdistance))
 
-        target_angle=abs(int(angle_deg-r.angle))
+        target_angle=abs(int(angle_deg-rangle))
         if target_angle==360:
             target_angle=0
         # 比例！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！    
-        distance=int(r.distance*23.5)#16.5,26.15,
+        distance=int(rdistance*23.5)#16.5,26.15,23.5
         #如果车的角度比要前进的角度大，则先负转弯，再前进
-        if angle_deg > r.angle:
+        if angle_deg > rangle:
             # sending_data(0x54,2,target_angle/255,target_angle%255,0x45)
             # sending_data(0x54,0,distance/255,distance%255,0x45)
             packet1 = bytes([0x54, 1, int(target_angle/255.0) % 255, target_angle%255, 0x45])
@@ -376,7 +585,7 @@ def main():
             angle_deg=angle_deg-target_angle
             if angle_deg < 0:
                 angle_deg += 360
-        #如果车的角度比要前进的角度小，则先正转弯，再前进    
+        #如果车的角度比要前进的角度小，则先正转弯，再前进
         else :
             # sending_data(0x54,1,target_angle/255,target_angle%255,0x45)
             # sending_data(0x54,0,distance/255,distance%255,0x45)
@@ -390,11 +599,59 @@ def main():
 
         angle_rad = math.radians(angle_deg)
         # 比例！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！    
-        end_x = start_x + distance * math.cos(angle_rad)/23.5*5.77#前是实际与低像素图比例，后是图片像素比
-        end_y = start_y - distance * math.sin(angle_rad)/23.5*5.77
+        end_x = start_x + distance * math.cos(angle_rad)/23.5*zoomm#前是实际与低像素图比例，后是图片像素比
+        end_y = start_y - distance * math.sin(angle_rad)/23.5*zoomm
         #画路径
         cv2.line(zeros, (int(start_x), int(start_y)), (int(end_x), int(end_y)), (0, 255, 0), 2)
         start_x, start_y = end_x, end_y
+
+    # 通知 C++ 开始处理
+    os.write(efd, struct.pack('Q', 1))  # 发送 64-bit 整数 1
+    # os.close(efd)
+    
+
+    
+
+    # for r in result:
+    #     if r.angle==360:
+    #         r.angle=0
+    #     print(r.angle,r.distance)
+
+    #     target_angle=abs(int(angle_deg-r.angle))
+    #     if target_angle==360:
+    #         target_angle=0
+    #     # 比例！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！    
+    #     distance=int(r.distance*23.5)#16.5,26.15,
+    #     #如果车的角度比要前进的角度大，则先负转弯，再前进
+    #     if angle_deg > r.angle:
+    #         # sending_data(0x54,2,target_angle/255,target_angle%255,0x45) 
+    #         # sending_data(0x54,0,distance/255,distance%255,0x45)
+    #         packet1 = bytes([0x54, 1, int(target_angle/255.0) % 255, target_angle%255, 0x45])
+    #         packet2 = bytes([0x54, 0, int(distance/255) % 255, distance%255, 0x45])
+    #         all_data.append(packet1)
+    #         all_data.append(packet2)
+    #         angle_deg=angle_deg-target_angle
+    #         if angle_deg < 0:
+    #             angle_deg += 360
+    #     #如果车的角度比要前进的角度小，则先正转弯，再前进    
+    #     else :
+    #         # sending_data(0x54,1,target_angle/255,target_angle%255,0x45)
+    #         # sending_data(0x54,0,distance/255,distance%255,0x45)
+    #         packet1 = bytes([0x54, 2, int(target_angle/255.0) % 255, target_angle%255, 0x45])
+    #         packet2 = bytes([0x54, 0, int(distance/255) % 255, distance%255, 0x45])
+    #         all_data.append(packet1) 
+    #         all_data.append(packet2)
+    #         angle_deg=angle_deg+target_angle
+    #         if angle_deg >= 360:
+    #             angle_deg -= 360
+
+    #     angle_rad = math.radians(angle_deg)
+    #     # 比例！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！    
+    #     end_x = start_x + distance * math.cos(angle_rad)/23.5*zoomm#前是实际与低像素图比例，后是图片像素比
+    #     end_y = start_y - distance * math.sin(angle_rad)/23.5*zoomm
+    #     #画路径
+    #     cv2.line(zeros, (int(start_x), int(start_y)), (int(end_x), int(end_y)), (0, 255, 0), 2)
+    #     start_x, start_y = end_x, end_y
     packet3 = bytes([0x54, 2, 0x00, 0x64, 0x45])
     all_data.append(packet3)
     ser.write(b''.join(all_data))
@@ -413,6 +670,10 @@ def main():
     
     logger.info("\033[1;32m" + f"saved combined result in path: \"./{opt.img_save_path}\"" + "\033[0m")
     logger.info("\033[1;32m" + f"saved mask result in path: \"./{opt.mask_save_path}\"" + "\033[0m")
+
+    cpp_process.terminate()
+    
+    os.close(efd)
     # # 在main()函数中，后处理完成后添加以下代码
     # class_mask = generate_class_mask(results, img.shape)
 
@@ -731,7 +992,7 @@ coco_names1 = ["background","person","knife","fork","cup","giraffe","plate","tab
 coco_names= ["background","terrain","tree","car-tou","car-wei"]
 
 rdk_colors = [
-    (56, 56, 255), (151, 157, 255), (31, 112, 255), (29, 178, 255),(49, 210, 207), (10, 249, 72), (23, 204, 146), (134, 219, 61),
+    (56, 56, 255), (151, 157, 255), (236, 24, 0), (255, 56, 132),(49, 210, 207), (10, 249, 72), (23, 204, 146), (134, 219, 61),
     (52, 147, 26), (187, 212, 0), (168, 153, 44), (255, 194, 0),(147, 69, 52), (255, 115, 100), (236, 24, 0), (255, 56, 132),
     (133, 0, 82), (255, 56, 203), (200, 149, 255), (199, 55, 255)]
 

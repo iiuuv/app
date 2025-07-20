@@ -1,0 +1,3 @@
+/app/my_project/path/build/CMakeFiles/pathCXX2.dir
+/app/my_project/path/build/CMakeFiles/edit_cache.dir
+/app/my_project/path/build/CMakeFiles/rebuild_cache.dir
