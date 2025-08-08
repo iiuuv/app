@@ -1,34 +1,29 @@
-from pyftpdlib.authorizers import DummyAuthorizer
-from pyftpdlib.handlers import FTPHandler
-from pyftpdlib.servers import FTPServer
+import threading
+import queue
+import time
 
-def ftp_server():
-    # 创建用户授权管理器
-    authorizer = DummyAuthorizer()
-    
-    # 添加用户权限（将图片目录添加为访问路径）
-    # authorizer.add_user("user", "12345", "/home/user", perm="elradfmw")  # 原目录
-    authorizer.add_user("user", "12345", "/app/my_project/photo", perm="elradfmw")  # 新增图片目录
-    
-    # 可选：添加匿名用户访问（允许无账号访问）
-    # authorizer.add_anonymous("/home/nobody")
-    authorizer.add_anonymous("/app/my_project/photo")  # 允许匿名用户访问图片目录
+# 创建线程安全的队列
+msg_queue = queue.Queue(maxsize=5)  # 最大容量5
 
-    # 初始化FTP处理程序
-    handler = FTPHandler
-    handler.authorizer = authorizer
+def sender():
+    for i in range(3):
+        time.sleep(1)
+        message = f"消息 {i}"
+        msg_queue.put(message)  # 放入队列
+        print(f"发送: {message}")
 
-    # 设置服务器
-    server = FTPServer(("192.168.1.38", 8080), handler)
-    
-    # 启动服务器
-    try:
-        print("FTP服务器已启动，等待连接...")
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n服务器已关闭")
-    except Exception as e:
-        print(f"发生错误: {e}")
+def receiver():
+    while True:
+        message = msg_queue.get()  # 从队列取出（若为空则阻塞等待）
+        print(f"接收: {message}")
+        msg_queue.task_done()  # 通知队列任务完成
 
-if __name__ == "__main__":
-    ftp_server()
+t1 = threading.Thread(target=sender)
+t2 = threading.Thread(target=receiver, daemon=True)
+
+t1.start()
+t2.start()
+
+t1.join()
+msg_queue.join()  # 等待队列中所有消息被处理完
+print("程序结束")

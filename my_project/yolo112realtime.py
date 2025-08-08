@@ -37,14 +37,19 @@ import mmap
 import os
 import subprocess
 import ctypes
+import pickle
 import struct
 import json
-
+import socket
+import struct  # ==== 新增：用于打包数据长度 ====
+from pyftpdlib.authorizers import DummyAuthorizer
+from pyftpdlib.handlers import FTPHandler
+from pyftpdlib.servers import FTPServer
 # import socket
 # from pyftpdlib.authorizers import DummyAuthorizer
 # from pyftpdlib.handlers import FTPHandler
 # from pyftpdlib.servers import FTPServer
-from cv import ftp_server
+
 import threading
 # import time
 
@@ -64,7 +69,9 @@ from serial1 import wait_for_complete,turn_back_and_land, take_off_and_go
 # from pathfinder import search_path
 from yolo11_fire_realtime import YOLO11_Detect
 from argparse import Namespace
-
+PORT = 8888         
+PC_IP = "192.168.1.253"
+has_received_enable = False
 
 # 日志模块配置
 # logging configs
@@ -107,7 +114,25 @@ print(sys.executable)
 #     except Exception as e:
 #         print(f"发生错误: {e}")
 
+def send_img(socket,img,i):
+    # 将图像编码为JPEG（减少传输量）
+    try:
+        _, img_encoded = cv2.imencode('.jpg', img)
 
+        data_dict = {
+            'type': 'image',
+            'image_number': i,
+            'image_data': img_encoded
+        }
+
+        data = pickle.dumps(data_dict)
+
+        # 发送数据长度和数据
+        message_size = struct.pack("I", len(data))
+        socket.sendall(message_size + data)
+
+    except Exception as e:
+            print(f"图像发送失败: {e}")
 
 def signal_handler(signal, frame):
     print("\nExiting program")
@@ -368,6 +393,19 @@ cap.set(cv2.CAP_PROP_FPS, 30)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 768)
 
+# ==== 新增代码开始：初始化Socket连接 ====
+# 创建TCP客户端Socket
+try:
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.connect((PC_IP, PORT))  # 连接PC端
+    print(f"已连接到PC: {PC_IP}:{PORT}")
+except Exception as e:
+    print(f"Socket连接失败: {e}")
+    cap.release()
+    sys.exit(-1)
+client_socket.sendall('1'.encode('utf-8'))    
+# ==== 新增代码结束 ====
+
 # coconame1 = ["fire","smoke"]
 # models1 = "/app/my_project/bin/converted_model2.bin"
 # infer = BPU_Detect(models1,coconame1,conf=0.45,iou=0.3,mode = True)
@@ -375,7 +413,7 @@ namespace_fire = Namespace(
     model_path='/app/my_project/bin/yolo11_fire.bin',
     classes_num=2,
     nms_thres=0.7,
-    score_thres=0.6,
+    score_thres=0.88,
     reg=16
 )
 fire_detect = YOLO11_Detect(namespace_fire)
@@ -383,47 +421,6 @@ fire_detect = YOLO11_Detect(namespace_fire)
 ser = serial.Serial('/dev/ttyS1', 115200, timeout=1) # 1s timeout
 ser3 = serial.Serial('/dev/ttyS3', 115200, timeout=1)
 all_data=[]
-
-
-def get_fire():
-    # 读取摄像头图像
-    class_id1=1
-
-    _ ,frame = cap.read()
-        
-    # print(frame.shape)
-    if frame is None:
-        print("Failed to get image from usb camera")
-
-    des_dim = (800, 600)
-
-    # 读图
-    img = cv2.resize(frame, des_dim, interpolation=cv2.INTER_AREA)
-
-    # infer.detect(img)
-
-    # 输入图片
-    input_tensor_fire = fire_detect.preprocess_yuv420sp(img)
-    # 推理
-    outputs_fire = fire_detect.c2numpy(fire_detect.forward(input_tensor_fire))
-    # 后处理
-    results_fire = fire_detect.postProcess(outputs_fire)
-    # fire_detect.detect(img)
-
-    for class_id, score, x1, y1, x2, y2 in results_fire:
-        class_id1=class_id
-        print("(%d, %d, %d, %d) -> %d: %.2f"%(x1,y1,x2,y2, class_id,score))
-    
-    return class_id1
-
-def wait_10_check():
-    time_start = time()
-    while True:
-        if (get_fire() == 0):
-            time_start = time()
-        if time() - time_start > 10:
-            break
-        sleep(0.05)
 
 def wait_for_signal(ser:serial.Serial):
 	buf = "a"
@@ -438,12 +435,6 @@ def wait_for_fire(ser:serial.Serial):
 		buf = ser.readall()
 		if len(buf) == 1 and buf[0] == 87:
 			break		        
-
-def fly_control(ser1:serial.Serial,ser2:serial.Serial,all_data):
-    take_off_and_go(ser1)
-    wait_10_check()
-    #turn_back_and_land(ser2)
-    print("Landing")
 
 def main_map():
     # 初始化共享内存
@@ -477,6 +468,9 @@ def main_map():
     car_center_pianyi=0
     path_points = []
     idss=[]
+    car_over=0
+    fly_back=1
+    
 
     print(1)
     parser = argparse.ArgumentParser()
@@ -493,45 +487,25 @@ def main_map():
     # parser.add_argument('--img-save-path', type=str, default='/app/my_project/v8seg-photo/result.jpg', help='Path to Load Test Image.')
     parser.add_argument('--classes-num', type=int, default=5, help='Classes Num to Detect.')
     parser.add_argument('--nms-thres', type=float, default=0.7, help='IoU threshold.')
-    parser.add_argument('--score-thres', type=float, default=0.87, help='confidence threshold.')
+    parser.add_argument('--score-thres', type=float, default=0.83, help='confidence threshold.')
     parser.add_argument('--reg', type=int, default=16, help='DFL reg layer.')
     parser.add_argument('--mc', type=int, default=32, help='Mask Coefficients')
     parser.add_argument('--is-open', type=bool, default=True, help='Ture: morphologyEx')
     parser.add_argument('--is-point', type=bool, default=True, help='Ture: Draw edge points')
     opt = parser.parse_args()
     logger.info(opt)
+    
+    logging.basicConfig(
+        stream=sys.stdout,
+        level=logging.INFO,
+        format="%(message)s",
+        buffer=True  # 启用缓冲
+    )
+    
     i=0
     Buildmap=0
     # 实例化
     model = YOLO11_Seg(opt)
-
-    # coconame1 = ["fire","smoke"]
-    # models1 = "/app/my_project/bin/converted_model2.bin"
-    # infer = BPU_Detect(models1,coconame1,conf=0.55,iou=0.3,mode = True)
-
-    # if len(sys.argv) > 1:
-    #     video_device = sys.argv[1]
-    # else:
-    #     video_device = find_first_usb_camera()
-
-    # if video_device is None:
-    #     print("No USB camera found.")
-    #     sys.exit(-1)
-
-    # print(f"Opening video device: {video_device}")
-    # cap = cv2.VideoCapture(video_device)
-    # if(not cap.isOpened()):
-    #     exit(-1)
-    
-    # print("Open usb camera successfully")
-    # # 设置usb camera的输出图像格式为 MJPEG， 分辨率 640 x 480
-    # # 可以通过 v4l2-ctl -d /dev/video8 --list-formats-ext 命令查看摄像头支持的分辨率
-    # # 根据应用需求调整该采集图像的分辨率
-    # codec = cv2.VideoWriter_fourcc( 'M', 'J', 'P', 'G' )
-    # cap.set(cv2.CAP_PROP_FOURCC, codec)
-    # cap.set(cv2.CAP_PROP_FPS, 30)
-    # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024)
-    # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 768)
 
     
     t2=0
@@ -539,18 +513,19 @@ def main_map():
     car_radius=0
     angle_deg=0
     fire_center=(0,0)
+    # 设定距离阈值（可根据实际情况调整）
+    DISTANCE_THRESHOLD = 80  # 像素距离阈值
+    map_end=1
+    # 初始化车头和车尾位置变量
+    tou_pos = None
+    wei_pos = None
 
     
-    wait_for_signal(ser3)
-    take_off_and_go(ser3)
+    # wait_for_signal(ser3)
+    # take_off_and_go(ser3)
     
     while True:
-        # ser.write('R'.encode('UTF-8'))
-        # if ser.readall():
-        #     ser.write('R'.encode('UTF-8'))
-        #     print("Success to connect to the serial device.")
-            # aaaaaa=ser.readall()
-
+        
         # 读取摄像头图像
         _ ,frame = cap.read()
             
@@ -599,33 +574,59 @@ def main_map():
 
         #掩码处理部分
         for class_id, score, x1, y1, x2, y2, mask in results:                
-            # 计算车的实时方向
+            # 保存车头和车尾位置
             if class_id == 3:
-                tou = ((x1 + x2) // 2, (y1 + y2) // 2)
+                tou_pos = ((x1 + x2) // 2, (y1 + y2) // 2)  # 车头中心坐标
             if class_id == 4:
-                wei = ((x1 + x2) // 2, (y1 + y2) // 2)
+                wei_pos = ((x1 + x2) // 2, (y1 + y2) // 2)  # 车尾中心坐标
 
+            # 对于车头(class_id=3)，使用完整欧氏距离判断有效性
+            if class_id == 3:
+                # 检查是否有车尾位置信息
+                if wei_pos is not None:
+                    # 计算x、y方向差值（整数运算）
+                    dx = tou_pos[0] - wei_pos[0]
+                    dy = tou_pos[1] - wei_pos[1]
+                    
+                    # 计算完整欧氏距离（包含平方和开方）
+                    distance_squared = dx * dx + dy * dy  # 距离平方（整数运算）
+                    distance = math.sqrt(distance_squared)  # 开方得到实际距离（浮点数）
+                    
+                    # 与阈值比较
+                    if distance > DISTANCE_THRESHOLD:
+                        logging.info(f"车头与车尾距离过大({distance:.1f}像素)，忽略车头识别")
+                        continue  # 跳过后续处理
+                else:
+                    # 没有车尾位置信息，忽略车头识别
+                    logging.info("缺少车尾位置信息，忽略车头识别")
+                    continue  # 跳过后续处理
+
+            # 计算车的实时方向（仅当车头和车尾都存在时）
             try:
-                dx = tou[0]-wei[0]
-                dy = tou[1]-wei[1]
-                #提取半径
-                car_center=((tou[0]+wei[0])//2,(tou[1]+wei[1])//2)
-                car_radius=abs(dy-dx)*0.75
+                if tou_pos is not None and wei_pos is not None and map_end==1:
+                    dx = tou_pos[0] - wei_pos[0]
+                    dy = tou_pos[1] - wei_pos[1]
+                    # 提取半径（使用整数运算）
+                    car_center = ((tou_pos[0] + wei_pos[0]) // 2, (tou_pos[1] + wei_pos[1]) // 2)
+                    car_radius = int(abs(dy - dx) * 0.75)  # 转换为int
+                    
+                    # 计算弧度角，注意：atan2 参数是 (y, x)
+                    angle_rad = math.atan2(dy, dx)
 
-                # 计算弧度角，注意：atan2 参数是 (y, x)
-                angle_rad = math.atan2(dy, dx)
-
-                # 转换为角度，并调整范围到 [0, 360)
-                angle_deg = 180-math.degrees(angle_rad)
-                if angle_deg < 0:
-                    angle_deg += 360
-                if angle_deg > 360:
-                    angle_deg -= 360
-                print(f"Direction Angle: {angle_deg:.2f}°")
+                    # 转换为角度，并调整范围到 [0, 360)
+                    angle_deg = 180 - math.degrees(angle_rad)
+                    if angle_deg < 0:
+                        angle_deg += 360
+                    if angle_deg > 360:
+                        angle_deg -= 360
+                    # 替换print为logging.info
+                    logging.info(f"Direction Angle: {int(angle_deg)}°")
             except NameError as e:
-                print("缺少车头或车尾位置信息，无法计算方向。")
+                # 替换print为logging.info
+                logging.info("缺少车头或车尾位置信息，无法计算方向。")
 
-            print("(%d, %d, %d, %d) -> %s: %.2f"%(x1,y1,x2,y2, coco_names[class_id], score))
+            # 替换常规输出的print为logging.info
+            # logging.info("(%d, %d, %d, %d) -> %s: %.2f"%(x1,y1,x2,y2, coco_names[class_id], score))
             draw_detection(draw_img, (x1, y1, x2, y2), score, class_id)
             # Instance Segment
             if mask.size == 0:
@@ -649,13 +650,13 @@ def main_map():
                 points = np.array([[[int(x), int(y)] for x, y in merged_points]], dtype=np.int32)
                 # 绘制轮廓
                 cv2.polylines(draw_img, points, isClosed=True, color=rdk_colors[(class_id-1)%20], thickness=4)
-             
+            
             # 更新类别计数器
             if class_id in class_counters:
                 class_counters[class_id] += 1
             else:
                 class_counters[class_id] = 1
-            if class_counters.get(1, 0) == 6 and class_counters.get(2, 0) == 4 and idss == 0:
+            if class_counters.get(1, 0) == 6 and class_counters.get(2, 0) == 4 and idss == 0 and map_end==1:
                 sleep(0.5)
                 if class_counters.get(1, 0) == 6 and class_counters.get(2, 0) == 4 and idss == 0:
                     Buildmap = 1
@@ -664,11 +665,12 @@ def main_map():
 
         #把火焰方框添加到掩码图中
         # fire_center=(0,0)
+        
         fire_radius=0        
         if idss == 0: 
             # 获取rdk_colors的最后一个颜色
             last_color = rdk_colors[-1]
-    
+            time_fire= time()
             for class_id, score, x1, y1, x2, y2 in results_fire:
                 x11, y11, x22, y22 = x1, y1, x2, y2
                 # fire_radius = math.sqrt((x11-x22)**2+(y11-y22)**2)*0.5
@@ -679,44 +681,46 @@ def main_map():
                 draw_detection_fire(draw_img, (x11, y11, x22, y22), score, class_id)
                 # 在zeros掩码图中填充相同颜色（实心矩形）
                 zeros[y11:y22, x11:x22, :] = last_color
+        else:
+            # 检查time_fire是否已定义，未定义则跳出else
+            if 'time_fire' in locals():
+                # 仅当time_fire存在时，才执行else块内的逻辑
+                nofire_time = time()
+                # buf = ser.readall()
+                # if len(buf) == 1 and buf[0] == 87:
+                #     car_over = 1
+                if nofire_time - time_fire > 10 and car_over == 0 and fly_back==1:
+                    turn_back_and_land(ser3)
+                    fly_back=0
 
         add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
         #融合图像显示
         cv2.imshow("add_result",add_result)
-        # cv2.imwrite(os.path.join(output_folder, "/app/my_project/photo/2.png"), add_result)
+        send_img(client_socket, add_result, 2)
         
-        #发送给主机图像
-        # message = "1"
-        # client_socket.sendall(message.encode('utf-8'))
-        # # 将图像数组转为字节流
-        # sleep(0.01)
-        # data1 = add_result.tobytes()
-
-        # # 发送数据长度和图像数据
-        # client_socket.sendall(struct.pack("L", len(data1)) + data1)
         #透视变换
         zeros=process(zeros)
         #缩小地图与寻路
 
-
         print(t2)
-        if Buildmap:
+        if Buildmap and map_end==1:
+            
             end_y=0
             end_x=0
             # start_x, start_y = car_center[0], car_center[1]
             if car_center_pianyi == 0:
                 car_center_pianyi=1
                 if car_center[0]<384:
-                    start_x= car_center[0]+0.06*abs(car_center[0]-384)
+                    start_x= car_center[0]+0.085*abs(car_center[0]-384)
                 else:
-                    start_x= car_center[0]-0.06*abs(car_center[0]-384)
+                    start_x= car_center[0]-0.085*abs(car_center[0]-384)
                 if car_center[1]<288:
-                    start_y= car_center[1]+0.06*abs(car_center[1]-288)
+                    start_y= car_center[1]+0.085*abs(car_center[1]-288)
                 else:
-                    start_y= car_center[1]-0.06*abs(car_center[1]-288)
+                    start_y= car_center[1]-0.085*abs(car_center[1]-288)
 
             #画起点
-            cv2.circle(zeros, (int(start_x), int(start_y)), 5, (0, 255, 0), -1)
+            cv2.circle(zeros, (int(start_x), int(start_y)), 10, (0, 255, 0), -1)
             t0 = time()
             # Zoom=des_dim[0]/133
             zoomm=768/133
@@ -727,58 +731,7 @@ def main_map():
             # 二值化
             map2=binarize_image_to_array(map2,[(236, 24, 0), (255, 56, 132),(199, 55, 255)], [(56, 56, 255), (151, 157, 255)],tolerance=30)
             # print(map2)
-            # # result = search_path(map2,(int(car_center[0]/Zoom),int(car_center[1]/Zoom)),(int(fire_center[0]/Zoom),int(fire_center[1]/Zoom)),int(car_radius/Zoom),int(fire_radius/Zoom))
-            # result = search_path(map2,(int(start_x/Zoom),int(start_y/Zoom)),(10,120),8,8)
-
-            # # cv2.circle(zeros, (int(start_x), int(start_y)), 15, (0, 255, 0), -1)
-            # all_data=[]
-            # for r in result:
-            #     print(r.angle,r.distance)
-
-            #     target_angle=abs(int(angle_deg-r.angle))
-            #     if target_angle==360:
-            #         target_angle=0
-            #     distance=int(r.distance*26.15)#16.5
-            #     #如果车的角度比要前进的角度大，则先负转弯，再前进
-            #     if angle_deg > r.angle:
-            #         # sending_data(0x54,2,target_angle/255,target_angle%255,0x45)
-            #         # sending_data(0x54,0,distance/255,distance%255,0x45)
-            #         packet1 = bytes([0x54, 1, int(target_angle/255.0) % 255, target_angle%255, 0x45])
-            #         packet2 = bytes([0x54, 0, int(distance/255) % 255, distance%255, 0x45])
-            #         all_data.append(packet1)
-            #         all_data.append(packet2)
-            #         angle_deg=angle_deg-target_angle
-            #         if angle_deg < 0:
-            #             angle_deg += 360
-            #     #如果车的角度比要前进的角度小，则先正转弯，再前进    
-            #     else :
-            #         # sending_data(0x54,1,target_angle/255,target_angle%255,0x45)
-            #         # sending_data(0x54,0,distance/255,distance%255,0x45)
-            #         packet1 = bytes([0x54, 2, int(target_angle/255.0) % 255, target_angle%255, 0x45])
-            #         packet2 = bytes([0x54, 0, int(distance/255) % 255, distance%255, 0x45])
-            #         all_data.append(packet1) 
-            #         all_data.append(packet2)
-            #         angle_deg=angle_deg+target_angle
-            #         if angle_deg >= 360:
-            #             angle_deg -= 360
-
-            #     angle_rad = math.radians(angle_deg)
-            #     end_x = start_x + distance * math.cos(angle_rad)/26.15*Zoom#前是实际与低像素图比例，后是图片像素比
-            #     end_y = start_y - distance * math.sin(angle_rad)/26.15*Zoom
-            #     #画路径
-            #     cv2.line(zeros, (int(start_x), int(start_y)), (int(end_x), int(end_y)), (0, 255, 0), 2)
-            #     start_x, start_y = end_x, end_y
-
-            # ser.write(b''.join(all_data))
-
-            # print(all_data)
-            # # 画终点
-            # # cv2.circle(zeros, (int(start_x), int(start_y)), 15, (255, 0, 0), -1)
-            # # 画火焰点
-
-            # # cv2.circle(zeros, fire_center, 15, (0, 0, 255), -1)
-            # Step 1: 转换为 numpy 数组，并指定数据类型为 uint8
-            # map3 = [1, 5, 9]
+            
             map_array = np.array(map2, dtype=np.uint8)
             
 
@@ -813,15 +766,11 @@ def main_map():
             cpp_process.wait()
             os.write(efd, struct.pack('Q', 1))  # 发送 64-bit 整数 1
             
-            #读取验证
-            # shm_data.seek(0)
-            # shm_data.write(b'\x00' * SHM_DATA_SIZE)  # 用空字节覆盖
+            
             shm_data.seek(0)
             read_bytes = shm_data.read(SHM_DATA_SIZE)
             print(read_bytes)
-            # shm_result.seek(0)
-            # # 先写满空字节（清空），再写入新数据
-            # shm_result.write(b'\x00' * SHM_RESULT_SIZE)  # 用空字节覆盖
+            
             shm_result.seek(0)
             read_paths = shm_result.read(SHM_RESULT_SIZE)
             print("读取的 JSON 数据:", read_paths.decode('utf-8'))
@@ -831,6 +780,7 @@ def main_map():
                 try:
                     data_list = json.loads(read_paths.strip(b'\x00'))
                     if data_list != {'Error': 'No available path found.'}:
+                        map_end=0
                         json_parsed = True  # 标记为已解析
                         print("JSON 解析成功，数据已加载")
                 except json.JSONDecodeError as e:
@@ -838,14 +788,12 @@ def main_map():
             
             
             print(data_list)
-
+            
             print('car_center',int(start_x/zoomm),int(start_y/zoomm))
-            # result = search_path(map2,(int(start_x/zoomm),int(start_y/zoomm)),(int(fire_center[0]/zoomm), int(fire_center[1]/zoomm)),12,9)
 
 
             t1 = time()
             print("forward time is :", (t1 - t0))
-
             for item in data_list:
                 try:
                     # 检查 item 是否为字符串，若是则进行 JSON 解析
@@ -878,8 +826,6 @@ def main_map():
                     print(f"错误：对象类型错误，不是字典: {type(item)}，错误信息: {e}")
                     continue  # 跳过当前循环，继续处理下一个 JSON 对象
                 
-                # rdistance=abs(json_obj["Distance"])
-                # rangle=360-abs(json_obj["Direction"])
                 if rangle==360:
                     rangle=0
                 print(int(rangle),int(rdistance))
@@ -888,19 +834,11 @@ def main_map():
                 if target_angle==360:
                     target_angle=0
                 # 比例！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！    
-                distance=int(rdistance*23.5)#16.5,26.15,23.5
+                distance=int(rdistance*22.5)#16.5,26.15,23.5,
                 #如果车的角度比要前进的角度大，则先zheng转弯，再前进
                 if angle_deg > rangle:
-                    # sending_data(0x54,2,target_angle/255,target_angle%255,0x45)
-                    # sending_data(0x54,0,distance/255,distance%255,0x45)
+                
                     packet1 = angle_packet(angle_deg,rangle)
-                    
-                    # target_angle2 = angle_deg - rangle
-                    # if target_angle2 > 180:
-                    #     target_angle2 = 360 - target_angle2
-                    #     target_angle = abs(int(target_angle2))
-                        
-                    # packet1 = bytes([0x54, 1, int(target_angle/255.0) % 255, target_angle%255, 0x45])
                     packet2 = bytes([0x54, 0, int(distance/255) % 255, distance%255, 0x45])
                     all_data.append(packet1)
                     all_data.append(packet2)
@@ -910,16 +848,8 @@ def main_map():
                     target_angle2=0
                 #如果车的角度比要前进的角度小，则先fu转弯，再前进
                 else :
-                    # sending_data(0x54,1,target_angle/255,target_angle%255,0x45)
-                    # sending_data(0x54,0,distance/255,distance%255,0x45)
                     packet1 = angle_packet(angle_deg,rangle)
                     
-                    # target_angle2 = rangle - angle_deg
-                    # if target_angle2 > 180:
-                    #     target_angle2 = 360 - target_angle2
-                    #     target_angle = abs(int(target_angle2))
-                    
-                    # packet1 = bytes([0x54, 2, int(target_angle/255.0) % 255, target_angle%255, 0x45])
                     packet2 = bytes([0x54, 0, int(distance/255) % 255, distance%255, 0x45])
                     all_data.append(packet1) 
                     all_data.append(packet2)
@@ -929,55 +859,46 @@ def main_map():
                     target_angle2=0
                 angle_rad = math.radians(angle_deg)
                 # 比例！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！    
-                end_x = start_x + distance * math.cos(angle_rad)/23.5*zoomm#前是实际与低像素图比例，后是图片像素比
-                end_y = start_y - distance * math.sin(angle_rad)/23.5*zoomm
+                end_x = start_x + distance * math.cos(angle_rad)/22.5*zoomm#前是实际与低像素图比例，后是图片像素比
+                end_y = start_y - distance * math.sin(angle_rad)/22.5*zoomm
                 #记住路径
                 path_points.append( (start_x, start_y, end_x, end_y) )
                 #画路径
                 cv2.line(zeros, (int(start_x), int(start_y)), (int(end_x), int(end_y)), (0, 255, 0), 2)
                 start_x, start_y = end_x, end_y
-            #循环外画路径
-            # for (s_x, s_y, e_x, e_y) in path_points:
-            #     cv2.line(zeros, (int(s_x), int(s_y)), (int(e_x), int(e_y)), (0, 255, 0), 2)
             # 通知 C++ 开始处理
+
             os.write(efd, struct.pack('Q', 1))  # 发送 64-bit 整数 1
-            # os.close(efd)
-            # 喷水
-            # packet3 = bytes([0x54, 2, 0x00, 0x64, 0x45])
-            # all_data.append(packet3)
+
             if not json_parsed2 and json_parsed:
                 ser.write(b''.join(all_data))
                 json_parsed2 = True
 
             print(all_data)
             #画终点
-            cv2.circle(zeros, (int(start_x), int(start_y)), 15, (255, 0, 0), -1)
+            cv2.circle(zeros, (int(start_x), int(start_y)), 10, (255, 0, 0), -1)
             #画火焰点
             cv2.circle(zeros, (int(fire_center[0]), int(fire_center[1])), 15, (0, 0, 255), -1)
 
-            cv2.imshow("Mask",zeros)
-            # if abs(car_center[0]-fire_center[0])<100 and abs(car_center[1]-fire_center[1])<100 and car_center[0]!=0 and fire_center[0]!=0:
-            for (s_x, s_y, e_x, e_y) in path_points:
-                cv2.line(zeros, (int(s_x), int(s_y)), (int(e_x), int(e_y)), (0, 255, 0), 2)
-                cv2.imshow("Mask",zeros)
-            # wait_for_complete(ser,all_data)
-            wait_for_fire(ser)
-            turn_back_and_land(ser3)
-
+        # 画路径 
+        for (s_x, s_y, e_x, e_y) in path_points:
+            cv2.line(zeros, (int(s_x), int(s_y)), (int(e_x), int(e_y)), (0, 255, 0), 2)
+        
+        if path_points:  # 检查列表是否有元素
+            # 画起点
+            cv2.circle(zeros, (int(path_points[0][0]), int(path_points[0][1])), 10, (0, 255, 0), -1)
+            # 画终点
+            cv2.circle(zeros, (int(path_points[-1][0]), int(path_points[-1][1])), 10, (255, 0, 0), -1)
+        
+        #画火焰点
+        cv2.circle(zeros, (int(fire_center[0]), int(fire_center[1])), 10, (0, 0, 255), -1)    
+        
         #掩码显示
         cv2.imshow("Mask",zeros)
-        # cv2.imwrite(os.path.join(output_folder, "/app/my_project/photo/1.png"), zeros)
         
-        # # 发送给主机图像
-        # message = "2"
-        # client_socket.sendall(message.encode('utf-8'))
-        # # 将图像数组转为字节流
-        # sleep(0.01)
-        # data2 = zeros.tobytes()
-
-        # # 发送数据长度和图像数据
-        # client_socket.sendall(struct.pack("L", len(data2)) + data2)
-
+        # 发送显示内容给主机
+        send_img(client_socket, zeros, 3)
+        
         key = cv2.waitKey(1) & 0xFF
         if key == 27 or key == ord('q'):  # ESC键或q键
             break
@@ -985,32 +906,6 @@ def main_map():
     # 释放资源
     cap.release()
     cv2.destroyAllWindows()
-    
-    # # 可视化, 这里采用直接相加的方式，实际应用中对Mask一般不需要Resize这些操作
-    # add_result = np.clip(draw_img + 0.3*zeros, 0, 255).astype(np.uint8)
-    # # 保存结果
-    # cv2.imwrite(opt.img_save_path, np.hstack((draw_img, zeros, add_result)))
-    # # 单独保存掩码图
-    # cv2.imwrite(opt.mask_save_path, zeros)
-    # logger.info("\033[1;32m" + f"saved combined result in path: \"./{opt.img_save_path}\"" + "\033[0m")
-    # logger.info("\033[1;32m" + f"saved mask result in path: \"./{opt.mask_save_path}\"" + "\033[0m")
-    # # 在main()函数中，后处理完成后添加以下代码
-    # class_mask = generate_class_mask(results, img.shape)
-
-    # # 保存为图像（0-背景，1-第一类，2-第二类，依此类推）
-    # # cv2.imwrite("class_mask.png", class_mask)
-
-    # # 保存为numpy数组，便于后续处理
-    # np.save("class_mask.npy", class_mask)
-
-    # # 保存为文本文件
-    # txt_save_path = "/app/my_project/v8seg-photo/class_mask.txt"  # 修改为你想保存的路径
-    # np.savetxt(txt_save_path, class_mask, fmt='%d')  # 使用%d格式保存整数
-
-    # # 打印统计信息
-    # print(f"生成的类别掩码形状: {class_mask.shape}")
-    # print(f"检测到的类别数量: {len(np.unique(class_mask)) - 1}")  # 减去背景(0)
-    # print(f"文本文件已保存至: {txt_save_path}")
         
 
 
@@ -1308,7 +1203,7 @@ coco_names1 = ["background","person","knife","fork","cup","giraffe","plate","tab
 coco_names= ["background","terrain","tree","car-tou","car-wei"]
 coco_names_fire = ["fire","smoke"]
 rdk_colors = [
-    (56, 56, 255), (151, 157, 255), (236, 24, 0), (255, 56, 132),(49, 210, 207), (10, 249, 72), (23, 204, 146), (134, 219, 61),
+    (255, 174, 0), (151, 157, 255), (236, 24, 0), (255, 56, 132),(49, 210, 207), (10, 249, 72), (23, 204, 146), (134, 219, 61),
     (52, 147, 26), (187, 212, 0), (168, 153, 44), (255, 194, 0),(147, 69, 52), (255, 115, 100), (236, 24, 0), (255, 56, 132),
     (133, 0, 82), (255, 56, 203), (200, 149, 255), (199, 55, 255)]
 
@@ -1354,17 +1249,97 @@ def draw_detection_fire(img, bbox, score, class_id) -> None:
     )
     cv2.putText(img, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
+
+
+def execute_command(json_data):
+    global has_received_enable  # 引用全局变量
+    
+    # 先检查当前命令是否为"enable"，如果是则更新状态
+    current_type = json_data.get("type")
+    if current_type == "enable":
+        has_received_enable = True
+        # 对于"enable"命令本身，可返回空列表或特殊标识（根据需求调整）
+        return [0x00] * 7  # 这里返回全0，也可根据实际需求修改
+    
+    # 如果从未接收过"enable"，直接返回全0x00
+    if not has_received_enable:
+        return [0x00] * 7
+    
+    # 以下是原有逻辑（仅当has_received_enable为True时执行）
+    command_type = current_type
+    direction = int(json_data.get("direction", 0))  # 增加默认值，避免KeyError
+    distance = int(json_data.get("distance", 0))    # 增加默认值，避免KeyError
+
+    # 初始化命令列表
+    command_list = [
+        0x54, 
+        0, 
+        int(direction / 256) % 256, 
+        int(direction % 256), 
+        int(distance / 256) % 256, 
+        int(distance % 256), 
+        0x45
+    ]
+
+    # 根据命令类型设置第二个字节
+    if command_type == 'move':
+        command_list[1] = 0x01
+    elif command_type == 'takeoff':
+        command_list[1] = 0x00
+    elif command_type == 'land':
+        command_list[1] = 0x02
+    
+    return command_list
+
+def receive_commands(client_socket, client_id):
+    """接收服务器发送的命令"""
+    while True:
+        try:
+            # 接收命令长度
+            packed_msg_size = client_socket.recv(struct.calcsize("I"))
+            if not packed_msg_size:
+                break
+
+            msg_size = struct.unpack("I", packed_msg_size)[0]
+
+            # 接收命令数据
+            command_data = b''
+            while len(command_data) < msg_size:
+                packet = client_socket.recv(msg_size - len(command_data))
+                if not packet:
+                    break
+                command_data += packet
+            
+            if not command_data:
+                break
+            
+            # 解码命令
+            command = command_data.decode('utf-8')
+            
+            # 尝试解析为JSON
+            try:
+                json_data = json.loads(command)
+                print(f"客户端 {client_id} 接收到JSON: {json.dumps(json_data, indent=2, ensure_ascii=False)}")
+                serdata=bytes(execute_command(json_data))
+                print(serdata)
+                ser3.write(serdata)
+            except json.JSONDecodeError:
+                # 不是JSON格式，直接打印命令
+                print(f"客户端 {client_id} 接收到命令: {command}")
+                
+        except Exception as e:
+            print(f"客户端 {client_id} 接收命令时出错: {e}")
+            break
+
 if __name__ == "__main__":
-    # ftp_thread = threading.Thread(target=main_map)
-    # yolo_thread = threading.Thread(target=fly_control,args=(ser,ser3,all_data))
-
-    # # # # 启动线程
-
-    # ftp_thread.start()
-    # yolo_thread.start()
-
-    # ftp_thread.join()
-    # yolo_thread.join()
-    main_map()
-    # while True:
-    #     sleep(1)
+    
+    # main_map()
+    
+    receive_thread = threading.Thread(target=receive_commands, args=(client_socket, 2), daemon=True)
+    main_thread = threading.Thread(target=main_map, daemon=True)
+    
+    receive_thread.start()
+    main_thread.start()
+    
+    main_thread.join()
+    receive_thread.join()

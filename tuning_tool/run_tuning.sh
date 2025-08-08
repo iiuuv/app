@@ -54,25 +54,56 @@ function suit_case_run() {
 	local vpm_json_path=${TUNING_CFG_PATH}/${run_case}/${VPM_JSON_NAME}
 	local cam_json_path=${TUNING_CFG_PATH}/${run_case}/${CAM_JSON_NAME}
 
-	if test "$run_case" == "imx219_rx2"; then
-		echo "Run $run_case"
-		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
-	
-	elif test "$run_case" == "ov5647_rx2"; then
+	if test "$run_case" == "sc1330t_rx0"; then
 		echo "Run $run_case"
 		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
 
-	elif test "$run_case" == "gc4663_rx2"; then
+	elif test "$run_case" == "sc230ai_rx1"; then
 		echo "Run $run_case"
 		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
 
-	elif test "$run_case" == "imx477_rx2"; then
+	elif test "$run_case" == "sc132gs_rx2"; then
+		echo "Run $run_case"
+		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
+
+	elif test "$run_case" == "sc035hgs_rx0"; then
+		echo "Run $run_case"
+		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
+
+	elif test "$run_case" == "sc035hgs_vc_rx0"; then
+		echo "Run $run_case"
+		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
+
+	elif test "$run_case" == "evb_sc230ai_rx3"; then
+		echo "Run $run_case"
+		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
+
+	elif test "$run_case" == "evb_f37_rx3"; then
+		echo "Run $run_case"
+		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
+
+	elif test "$run_case" == "sc202cs_rx0"; then
+		echo "Run $run_case"
+		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
+
+	elif test "$run_case" == "sc231ai_rx3"; then
+		echo "Run $run_case"
+		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
+
+	elif test "$run_case" == "imx415_rx0"; then
+		echo "Run $run_case"
+		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
+
+	elif test "$run_case" == "imx586_rx0"; then
+		echo "Run $run_case"
+		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
+
+	elif test "$run_case" == "os08c10_rx0"; then
 		echo "Run $run_case"
 		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" "$@"
 
 	elif test "$run_case" == "feedback_case"; then
 		echo "Run $run_case"
-		echo "Notice: this script just support feedback 1080p raw now!!"
 		${COMMON_DIR}/isp_tuning -v "${vpm_json_path}" -c "${cam_json_path}" -w 1 "$@"
 
 	fi

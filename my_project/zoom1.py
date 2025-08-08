@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 # (236, 24, 0), (255, 56, 132)
-block_color= (0x38, 0x38, 0XFF)
+block_color= (255, 174, 0)
 # additional_color1=(31, 112, 255)
 # additional_color2=(29, 178, 255)
 additional_color1=(236, 24, 0)
@@ -23,7 +23,7 @@ def process(image):
     
     # 定义需要处理的颜色列表 (RGB格式) 和对应的缩放因子
     color_processing_params = [
-        (block_color, 0.88),          # 原始颜色使用 0.90 缩放因子
+        (block_color, 0.865),          # 原始颜色使用 0.90 缩放因子
         (additional_color1, 0.90),    # 新增颜色1使用 0.95 缩放因子
         (additional_color2, 0.90)     # 新增颜色2使用 0.95 缩放因子
     ]

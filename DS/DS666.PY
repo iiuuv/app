@@ -91,7 +91,7 @@ def print_properties(pro):
 
 # 基于IOU的轻量级跟踪器（无外部依赖）
 class IOUTracker:
-    def __init__(self, max_age=20, iou_threshold=0.3):
+    def __init__(self, max_age=20, iou_threshold=0.2):
         self.max_age = max_age  # 目标消失后保留ID的最大帧数
         self.iou_threshold = iou_threshold  # 匹配IOU阈值
         self.tracks = []  # 跟踪列表，每个元素: (id, bbox, class_id, age)
@@ -227,7 +227,7 @@ class IOUTracker:
 
 # 计数区域类 - 无任何交互功能，仅通过代码设置
 class CountingRegion:
-    def __init__(self, x1=256, y1=192, x2=512, y2=384):
+    def __init__(self, x1=294, y1=192, x2=550, y2=384):
         # 默认设置为768x576分辨率下3x3网格的中心区域
         self.x1 = x1
         self.y1 = y1
@@ -264,7 +264,7 @@ class CountingRegion:
 
 def main_map():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model-path', type=str, default='/app/DS/converted_model_modified.bin', 
+    parser.add_argument('--model-path', type=str, default='/app/DS/converted_model_modified90.bin', 
                         help="""Path to BPU Quantized *.bin Model.
                                 RDK X3(Module): Bernoulli2.
                                 RDK Ultra: Bayes.
@@ -276,14 +276,14 @@ def main_map():
     parser.add_argument('--score-thres', type=float, default=0.5, help='confidence threshold.')
     parser.add_argument('--reg', type=int, default=16, help='DFL reg layer.')
     parser.add_argument('--mc', type=int, default=32, help='Mask Coefficients')
-    parser.add_argument('--tracker-max-age', type=int, default=10, help='Max frames to keep lost target ID')
-    parser.add_argument('--tracker-iou', type=float, default=0.3, help='Tracker IOU threshold')
+    parser.add_argument('--tracker-max-age', type=int, default=13, help='Max frames to keep lost target ID')
+    parser.add_argument('--tracker-iou', type=float, default=0.2, help='Tracker IOU threshold')
     
     # 添加计数区域的命令行参数
-    parser.add_argument('--region-x1', type=int, default=256, help='Counting region top-left x coordinate')
-    parser.add_argument('--region-y1', type=int, default=192, help='Counting region top-left y coordinate')
-    parser.add_argument('--region-x2', type=int, default=512, help='Counting region bottom-right x coordinate')
-    parser.add_argument('--region-y2', type=int, default=384, help='Counting region bottom-right y coordinate')
+    parser.add_argument('--region-x1', type=int, default=294, help='Counting region top-left x coordinate')
+    parser.add_argument('--region-y1', type=int, default=183, help='Counting region top-left y coordinate')
+    parser.add_argument('--region-x2', type=int, default=550, help='Counting region bottom-right x coordinate')
+    parser.add_argument('--region-y2', type=int, default=375, help='Counting region bottom-right y coordinate')
     
     opt = parser.parse_args()
     logger.info(opt)
@@ -389,6 +389,8 @@ def main_map():
                 # 只对新进入区域的目标计数
                 if class_id in counted_ids and track_id not in counted_ids[class_id]:
                     class_counters[class_id] += 1
+                    if class_counters[class_id]>=3:
+                        class_counters[class_id]=3
                     counted_ids[class_id].add(track_id)  # 记录已计数ID
                     logger.info(f"Counted {coco_names[class_id]} with ID {track_id}")
             
@@ -405,15 +407,15 @@ def main_map():
             # sleep(0.01)
             # ser.write(bytes([84,5,class_counters[5],round(center_x),round(center_y),69]))
 
-            ser.write(bytes([84,1,class_counters[1],69]))
+            ser.write(bytes([84,class_counters[1],class_counters[2],class_counters[3],class_counters[4],class_counters[5],69]))
             sleep(0.001)
-            ser.write(bytes([84,2,class_counters[2],69]))
-            sleep(0.001)
-            ser.write(bytes([84,3,class_counters[3],69]))
-            sleep(0.001)
-            ser.write(bytes([84,4,class_counters[4],69]))
-            sleep(0.001)
-            ser.write(bytes([84,5,class_counters[5],69]))
+            # ser.write(bytes([84,2,class_counters[2],69]))
+            # sleep(0.001)
+            # ser.write(bytes([84,3,class_counters[3],69]))
+            # sleep(0.001)
+            # ser.write(bytes([84,4,class_counters[4],69]))
+            # sleep(0.001)
+            # ser.write(bytes([84,5,class_counters[5],69]))
 
 
             # 绘制检测框和ID
@@ -435,7 +437,7 @@ def main_map():
         
 
         # 显示结果
-        cv2.imshow(window_name, draw_img)
+        # cv2.imshow(window_name, draw_img)
         t2= time()
         logger.info(f"Frame processing time: {1000 * (t2 - t1):.2f} ms")
 

@@ -23,11 +23,21 @@ from scipy.special import softmax
 # from scipy.special import expit as sigmoid
 from hobot_dnn import pyeasy_dnn as dnn  # BSP Python API
 
+import socket
+import struct  # ==== 新增：用于打包数据长度 ====
+from pyftpdlib.authorizers import DummyAuthorizer
+from pyftpdlib.handlers import FTPHandler
+from pyftpdlib.servers import FTPServer
+
 from time import time
 import argparse
 import logging 
 import os
 import sys
+
+PC_IP = "192.168.1.82"  # PC的IP（需修改为实际PC的IP）
+PORT = 8888               # 与PC端监听端口保持一致
+BUF_SIZE = 4096
 
 # 日志模块配置
 # logging configs
@@ -79,6 +89,24 @@ def main_fire():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 768)
 
+    # # ==== 新增代码开始：初始化Socket连接 ====
+    # # 创建TCP客户端Socket
+    # try:
+    #     # 绑定本地所有接口和指定端口
+    #     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #     server_socket.bind(('0.0.0.0', PORT))  # 服务端绑定本地端口
+    #     server_socket.listen(1)  # 最多允许1个客户端连接
+    #     print(f"服务端已启动，监听端口: {PORT}，等待PC端连接...")
+        
+    #     # 等待PC端连接（阻塞直到连接建立）
+    #     client_socket, client_addr = server_socket.accept()
+    #     print(f"PC端 {client_addr} 已连接")
+    # except Exception as e:
+    #     print(f"Socket服务端创建失败: {e}")
+    #     cap.release()
+    #     sys.exit(-1)
+    # # ==== 新增代码结束 ====
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--model-path', type=str, default='/app/my_project/bin/yolo11_fire.bin', 
                         help="""Path to BPU Quantized *.bin Model.
@@ -91,7 +119,7 @@ def main_fire():
     # parser.add_argument('--img-save-path', type=str, default='py_result.jpg', help='Path to Load Test Image.')
     parser.add_argument('--classes-num', type=int, default=2, help='Classes Num to Detect.')
     parser.add_argument('--nms-thres', type=float, default=0.7, help='IoU threshold.')
-    parser.add_argument('--score-thres', type=float, default=0.6, help='confidence threshold.')
+    parser.add_argument('--score-thres', type=float, default=0.88, help='confidence threshold.')
     parser.add_argument('--reg', type=int, default=16, help='DFL reg layer.')
     opt = parser.parse_args()
     logger.info(opt)
@@ -104,7 +132,7 @@ def main_fire():
     # logger.info("\033[1;32m" + f"saved in path: \"./{opt.img_save_path}\"" + "\033[0m")
 
     while True:
-
+        t1= time()
         _ ,frame = cap.read()
         
         # print(frame.shape)
@@ -139,9 +167,38 @@ def main_fire():
         print("forward time is :", (t1 - t0))
         
         cv2.imshow("fire",resized_data)
+
+        # # ==== 新增代码开始：通过Socket发送图像 ====
+        # try:
+        #     # 将图像编码为JPEG（减少传输量）
+        #     ret, buffer = cv2.imencode('.jpg', resized_data, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        #     if not ret:
+        #         print("图像编码失败")
+        #         continue
+            
+        #     # 转换为字节流
+        #     img_bytes = buffer.tobytes()
+        #     # 发送数据长度（4字节）+ 图像数据（解决粘包问题）
+        #     data_len = struct.pack('>I', len(img_bytes))  # 大端模式打包长度
+        #     client_socket.sendall(data_len + img_bytes)
+        #     print(f"已发送图像，大小: {len(img_bytes)}字节")
+        # except Exception as e:
+        #     print(f"图像发送失败: {e}")
+        #     break  # 发送失败时退出循环
+        # # ==== 新增代码结束 ====
+
+        t2= time()
+        print("time is :", (t2 - t1))
         key = cv2.waitKey(1) & 0xFF
         if key == 27 or key == ord('q'):  # ESC键或q键
             break
+
+    # # ==== 新增代码开始：释放资源 ====
+    # client_socket.close()  # 关闭Socket连接
+    # server_socket.close()
+    # # ==== 新增代码结束 ====
+    cap.release()
+    cv2.destroyAllWindows()
 
 class YOLO11_Detect():
     def __init__(self, opt):
